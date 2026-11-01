@@ -36,7 +36,8 @@ final class PromptStore {
     func reloadIfChanged() {
         guard persists else { return }
         let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-        guard modified == nil || modified != loadedAt else { return }
+        // A file that failed to read is tried again every time: fixing its permissions does not change its date.
+        guard unreadable || modified == nil || modified != loadedAt else { return }
         loadedAt = modified
         do {
             prompts = try PromptLibrary.load(from: file)
@@ -74,9 +75,10 @@ final class PromptStore {
 
     func delete(_ prompt: Prompt) {
         reloadIfChanged()
-        prompts.removeAll { $0.id == prompt.id }
+        // Undo brings back the prompt as stored, which may have changed in the file since the list showed it.
+        guard let index = prompts.firstIndex(where: { $0.id == prompt.id }) else { return }
+        deleted = prompts.remove(at: index)
         save()
-        deleted = prompt
         undoTask?.cancel()
         undoTask = Task {
             try? await Task.sleep(for: .seconds(5))
