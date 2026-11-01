@@ -163,9 +163,10 @@ public struct Server: Identifiable, Hashable, Sendable {
         return URL(string: "http://\(host):\(primaryPort)")
     }
 
+    /// The URL for another device: the primary port if it is open to the network, else the first port that is.
     public func networkURL(host: String?) -> URL? {
-        guard isExposed, framework.speaksHTTP, let host else { return nil }
-        return URL(string: "http://\(host):\(primaryPort)")
+        guard framework.speaksHTTP, let host, let exposed = ports.first(where: \.isWildcard) else { return nil }
+        return URL(string: "http://\(host):\(exposed.port)")
     }
 }
 

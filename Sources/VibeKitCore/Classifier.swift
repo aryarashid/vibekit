@@ -75,7 +75,7 @@ public struct Classifier: Sendable {
         if exePath.contains("/go-build") || process.exe == "air" { return .go }
         if exePath.contains("/target/debug/") || exePath.contains("/target/release/") { return .rust }
         if exePath.contains("/.build/debug/") || exePath.contains("/.build/release/")
-            || exePath.contains("/.build/arm64-apple-macosx/") { return .swift }
+            || exePath.contains("/.build/arm64-apple-macosx/") || exePath.contains("/.build/x86_64-apple-macosx/") { return .swift }
 
         return .tool
     }

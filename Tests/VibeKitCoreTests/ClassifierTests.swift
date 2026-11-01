@@ -83,6 +83,7 @@ struct ClassifierTests {
     @Test func rustAndSwiftBuildOutputs() {
         #expect(classifier.classify(facts("/Users/dev/code/api/target/debug/api", ["api"])) == .rust)
         #expect(classifier.classify(facts("/Users/dev/code/kit/.build/debug/Server", ["Server"])) == .swift)
+        #expect(classifier.classify(facts("/Users/dev/code/kit/.build/x86_64-apple-macosx/debug/Server", ["Server"])) == .swift)
     }
 
     @Test func httpServerDirectoryFlag() {
@@ -250,6 +251,12 @@ struct AddressTests {
         #expect(server([PortBinding(port: 5173, address: "fd00::5", isIPv6: true)]).localURL?.absoluteString == "http://[fd00::5]:5173")
         // `localhost` does not reach a loopback alias.
         #expect(server([PortBinding(port: 5173, address: "127.0.0.2", isIPv6: false)]).localURL?.absoluteString == "http://127.0.0.2:5173")
+    }
+
+    @Test func networkURLUsesTheExposedPort() {
+        let s = server([PortBinding(port: 3000, address: "127.0.0.1", isIPv6: false), PortBinding(port: 3001, address: "0.0.0.0", isIPv6: false)])
+        #expect(s.networkURL(host: "192.168.1.24")?.absoluteString == "http://192.168.1.24:3001")
+        #expect(server([PortBinding(port: 3000, address: "127.0.0.1", isIPv6: false)]).networkURL(host: "192.168.1.24") == nil)
     }
 
     @Test func reachableBindingWinsForAPort() {
