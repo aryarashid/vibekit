@@ -230,6 +230,11 @@ public final class PortScanner: @unchecked Sendable {
         while current.ppid > 1, table[current.ppid] != nil, chain.count < 8, let parent = inspect(current.ppid) {
             // Something that runs several servers (turbo, concurrently) is not part of this one.
             if runsAnotherServer(parent.pid, besides: current.pid) { break }
+            // Vibe Kit started this process, so it is the top of the unit even if it is a shell.
+            if parent.ppid == ownPid {
+                chain.insert(parent, at: 0)
+                break
+            }
             // A prefork master holds the socket its workers inherited, so it is the top of the same server.
             if let ports = listeners[parent.pid], !sockets.isDisjoint(with: ports) {
                 chain.insert(parent, at: 0)
@@ -253,8 +258,8 @@ public final class PortScanner: @unchecked Sendable {
             }
             break
         }
-        // Never end the chain on a bare shell.
-        while chain.count > 1, isScriptShell(chain[0]) { chain.removeFirst() }
+        // Never end the chain on a bare shell, unless Vibe Kit started it.
+        while chain.count > 1, isScriptShell(chain[0]), chain[0].ppid != ownPid { chain.removeFirst() }
         return chain
     }
 

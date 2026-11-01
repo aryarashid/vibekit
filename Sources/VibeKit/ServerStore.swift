@@ -455,16 +455,20 @@ final class ServerStore {
     private func processExited(pid: Int32, code: Int32) {
         let launch = launches.removeValue(forKey: pid)
         let recentID = recentPids.removeValue(forKey: pid)
-        guard Self.isCrash(code) else { return }
-        // It failed before its server came up, such as a syntax error on restart. Say so now, not after a timeout.
+        // It ended before its server came up, such as a syntax error on restart. Say so now, not after a timeout,
+        // and keep it in the list so it can be started again.
         if let launch, let state = pending[launch.pendingID], state != .stopping {
             pending[launch.pendingID] = nil
             expectedSignatures[launch.pendingID] = nil
-            add(launch.entry.stopped(.crashed(code: code), log: launch.log))
-            show(Toast(message: "\(launch.entry.title) exited with code \(code). Check its log.", isError: true))
+            let crashed = Self.isCrash(code)
+            add(launch.entry.stopped(crashed ? .crashed(code: code) : .exited, log: launch.log))
+            let title = launch.entry.title
+            show(Toast(message: crashed ? "\(title) exited with code \(code). Check its log." : "\(title) exited before it opened a port.",
+                       isError: true))
             schedule()
             return
         }
+        guard Self.isCrash(code) else { return }
         if let recentID, let index = recents.firstIndex(where: { $0.id == recentID }), recents[index].reason == .exited {
             recents[index].reason = .crashed(code: code)
             saveRecents()
