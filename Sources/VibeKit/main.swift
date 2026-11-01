@@ -9,8 +9,10 @@ if arguments.contains("--list") {
 }
 
 if arguments.contains("--toggle") {
+    // `--toggle prompts` opens on the Prompts tab.
+    let tab = arguments.firstIndex(of: "--toggle").flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
     DistributedNotificationCenter.default().postNotificationName(
-        AppDelegate.toggleNotification, object: nil, userInfo: nil, deliverImmediately: true)
+        AppDelegate.toggleNotification, object: nil, userInfo: tab.map { ["tab": $0] }, deliverImmediately: true)
     exit(0)
 }
 

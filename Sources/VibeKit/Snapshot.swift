@@ -1,8 +1,9 @@
 import AppKit
 import SwiftUI
+import VibeKitCore
 
 /// `VibeKit --snapshot out.png [--dark] [--select] [--expand] [--select-port N] [--expand-port N] [--settings]
-/// [--query text] [--demo] [--transparent]` renders the panel to a PNG, for design review and the README.
+/// [--prompts] [--edit-prompt] [--query text] [--demo] [--transparent]` renders the panel to a PNG, for design review and the README.
 /// `--demo` shows sample servers instead of yours. Glass cannot be captured offscreen, so the panel sits on the
 /// window background color, or on nothing with `--transparent` for compositing.
 @MainActor
@@ -10,8 +11,10 @@ enum Snapshot {
     static func render(to path: String) {
         let args = ProcessInfo.processInfo.arguments
         let store = ServerStore(settings: Settings())
+        let prompts = PromptStore(persists: !args.contains("--demo"))
         if args.contains("--demo") {
             DemoData.load(into: store)
+            DemoData.load(into: prompts)
         } else {
             store.isPanelOpen = true
             pump(seconds: 5)
@@ -24,13 +27,16 @@ enum Snapshot {
         initial.selectFirst = args.contains("--select")
         initial.expandFirst = args.contains("--expand")
         if args.contains("--settings") { initial.route = .settings }
+        if args.contains("--prompts") { initial.tab = .prompts }
+        if args.contains("--edit-prompt") { initial.route = .prompt(prompts.prompts.first?.id) }
         if let index = args.firstIndex(of: "--query"), index + 1 < args.count { initial.query = args[index + 1] }
         initial.selectPort = port(after: "--select-port")
         initial.expandPort = port(after: "--expand-port")
 
         var height: CGFloat = 400
-        let root = PanelRootView(store: store, onHeightChange: { height = min(max($0, 120), PanelMetrics.maxHeight) },
-                                 close: {}, initial: initial)
+        let root = PanelRootView(store: store, prompts: prompts,
+                                 onHeightChange: { height = min(max($0, 120), PanelMetrics.maxHeight) },
+                                 onUsePrompt: { _ in }, close: {}, initial: initial)
         let background = args.contains("--transparent") ? Color.clear : Color(nsColor: .windowBackgroundColor)
         let hosting = NSHostingView(rootView: root.background(background))
         let window = NSWindow(contentRect: NSRect(x: -4000, y: 0, width: PanelMetrics.width, height: height),

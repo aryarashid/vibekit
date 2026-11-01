@@ -67,6 +67,22 @@ The **V** in the panel header shows the worst light across all dev servers, and 
 - **Answers port questions.** Type a port number to see if it is free. Type a PID to find its server.
 - **Works with any menu bar.** The panel opens in the right place when the menu bar hides itself, on the display you are using, and when the icon is hidden behind the notch.
 
+## Prompts
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/prompts-dark.png">
+    <img src="docs/images/prompts-light.png" width="820" alt="The Prompts tab listing pinned and most used prompts, next to the prompt editor">
+  </picture>
+</p>
+
+The panel's second tab keeps the prompts you send to coding agents again and again. Press **Tab** in the panel to switch to it, or **⌃⌥⌘P** from anywhere.
+
+- **Use one in a keystroke.** Press ↩, or ⌘1 to ⌘9, to copy a prompt. Turn on **Paste into the app in front** in Settings and Vibe Kit pastes it for you when the panel closes. Pasting needs Accessibility access, which macOS asks for the first time.
+- **Your best ones float up.** Pin the ones you always want on top. The rest are ordered by how often and how recently you used them, and the bar on the left of each row shows it.
+- **Save from anywhere.** Select text in any app, then right-click and choose **Services → Add to Vibe Kit**. Or press **New**, or save what is on the clipboard.
+- **A file you own.** Prompts live in `~/Library/Application Support/VibeKit/prompts.json`, readable and sorted, so you can edit it by hand or keep it in your dotfiles. Changes made outside Vibe Kit show up the next time the panel opens.
+
 ## Install
 
 ### Download
@@ -93,13 +109,15 @@ The script builds a release binary, wraps it in `Vibe Kit.app`, signs it ad hoc,
 
 On first run Vibe Kit turns on Launch at Login. Turn it off in Settings, or from the menu bar icon's right-click menu.
 
-To uninstall, quit Vibe Kit and delete the app. It keeps a little state in `~/Library/Application Support/VibeKit` and the logs of servers it started in `~/Library/Logs/VibeKit`.
+To uninstall, quit Vibe Kit and delete the app. It keeps a little state and your prompts in `~/Library/Application Support/VibeKit` and the logs of servers it started in `~/Library/Logs/VibeKit`.
 
 ## Keyboard
 
 | Key | Action |
 | --- | --- |
 | ⌃⌥⌘V | Open or close the panel from anywhere |
+| ⌃⌥⌘P | Open the Prompts tab from anywhere |
+| Tab | Switch between Servers and Prompts |
 | Type | Filter by port, project, framework, branch, command or PID |
 | ↑ ↓ | Move between servers |
 | ↩ | Open in the browser, or start a stopped server |
@@ -112,7 +130,9 @@ To uninstall, quit Vibe Kit and delete the app. It keeps a little state in `~/Li
 | ⌘, | Settings |
 | Esc | Clear the filter, then close |
 
-Right-click any server for every action in one menu. Right-click the menu bar icon for Launch at Login, the logs folder and Quit.
+In the Prompts tab, ↩ and ⌘1 to ⌘9 use a prompt, ⌘N makes a new one, ⌘E edits, ⌘P pins, ⇧⌘C copies without closing and ⌘⌫ deletes.
+
+Right-click any server or prompt for every action in one menu. Right-click the menu bar icon for Launch at Login, the logs folder and Quit.
 
 ## Light on your Mac
 
@@ -120,7 +140,7 @@ Vibe Kit is written in Swift and asks the kernel directly through `libproc`. It 
 
 - While the panel is closed it scans every 4 seconds, with timer leeway so macOS can batch wakeups. Each scan checks new processes and known listeners, with a full sweep every 30 seconds.
 - While the panel is open it scans every 1.5 seconds, so the traces stay live.
-- The panel's views are built when it opens and thrown away when it closes.
+- The panel's views are built when it opens and thrown away when it closes. A few seconds after launch Vibe Kit opens the panel once, invisible and off screen, so the first real open is quick.
 - The status lights animate with Core Animation, which the window server runs on its own. Vibe Kit does no work per frame.
 - Each dev server gets one `GET /` to read its page title and status, not a poll, because frameworks like Next.js compile on every request. If a server does not answer yet, Vibe Kit tries again a few times while the panel is open.
 
@@ -128,7 +148,7 @@ Measured on an M1 Pro MacBook Pro running about 1,100 processes:
 
 | | CPU | Memory |
 | --- | --- | --- |
-| Panel closed | about 0.2% of one core | about 12 MB resident |
+| Panel closed | about 0.2% of one core | about 17 MB resident |
 | Panel open | about 2% of one core | about 40 MB resident |
 
 Measure it on your own machine:
@@ -150,19 +170,20 @@ The app binary doubles as a small CLI:
 VibeKit --list               # dev servers, databases and services as a table
 VibeKit --list --all         # include apps and other listeners
 VibeKit --toggle             # open or close the panel of the running app, for Raycast, Alfred or scripts
+VibeKit --toggle prompts     # the same, on the Prompts tab
 VibeKit --bench [sec]        # measure scan cost; add --open for the open-panel cadence
 VibeKit --snapshot out.png   # render the panel to a PNG without opening it
-        [--dark] [--settings] [--query text] [--select-port N] [--expand-port N]
+        [--dark] [--settings] [--prompts] [--edit-prompt] [--query text] [--select-port N] [--expand-port N]
         [--demo] [--transparent]
 ```
 
-`--demo` renders sample servers instead of yours, which is how the screenshots above are made.
+`--demo` renders sample servers and prompts instead of yours, which is how the screenshots above are made.
 
 ## Development
 
 ```sh
 swift build                    # debug build
-swift test                     # classifier, parser, project and exit code tests
+swift test                     # classifier, parser, project, exit code and prompt tests
 swift run VibeKit              # run from the terminal
 ./scripts/screenshots.sh       # render the README images from demo data
 swift scripts/make-icon.swift build   # redraw the app icon

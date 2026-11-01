@@ -2,6 +2,10 @@ import Foundation
 import Observation
 import ServiceManagement
 
+enum PanelTab: String {
+    case servers, prompts
+}
+
 @MainActor @Observable
 final class Settings {
     private let defaults = UserDefaults.standard
@@ -10,16 +14,24 @@ final class Settings {
     var showOtherListeners: Bool { didSet { defaults.set(showOtherListeners, forKey: "showOtherListeners") } }
     var showCountInMenuBar: Bool { didSet { defaults.set(showCountInMenuBar, forKey: "showCountInMenuBar") } }
     var hotKeyEnabled: Bool { didSet { defaults.set(hotKeyEnabled, forKey: "hotKeyEnabled") } }
+    var promptsHotKeyEnabled: Bool { didSet { defaults.set(promptsHotKeyEnabled, forKey: "promptsHotKeyEnabled") } }
+    /// Paste a prompt into the app in front when you pick it, not only copy it. Needs Accessibility access.
+    var pasteOnUse: Bool { didSet { defaults.set(pasteOnUse, forKey: "pasteOnUse") } }
+    /// The tab the panel showed last, so a click on the icon returns to it.
+    var lastTab: PanelTab { didSet { defaults.set(lastTab.rawValue, forKey: "lastTab") } }
     var editorID: String? { didSet { defaults.set(editorID, forKey: "editorID") } }
     var terminalID: String? { didSet { defaults.set(terminalID, forKey: "terminalID") } }
 
     private(set) var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
 
     init() {
-        defaults.register(defaults: ["showCountInMenuBar": true, "hotKeyEnabled": true])
+        defaults.register(defaults: ["showCountInMenuBar": true, "hotKeyEnabled": true, "promptsHotKeyEnabled": true])
         showOtherListeners = defaults.bool(forKey: "showOtherListeners")
         showCountInMenuBar = defaults.bool(forKey: "showCountInMenuBar")
         hotKeyEnabled = defaults.bool(forKey: "hotKeyEnabled")
+        promptsHotKeyEnabled = defaults.bool(forKey: "promptsHotKeyEnabled")
+        pasteOnUse = defaults.bool(forKey: "pasteOnUse")
+        lastTab = defaults.string(forKey: "lastTab").flatMap(PanelTab.init(rawValue:)) ?? .servers
         editorID = defaults.string(forKey: "editorID")
         terminalID = defaults.string(forKey: "terminalID")
     }

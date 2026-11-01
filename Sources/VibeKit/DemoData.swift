@@ -73,6 +73,27 @@ enum DemoData {
         store.showDemo(servers: servers, pages: pages, history: history, recents: recents)
     }
 
+    /// Sample prompts, with use counts that give the meters some range.
+    static func load(into prompts: PromptStore) {
+        let now = Date()
+        func ago(_ hours: Double) -> Date { now.addingTimeInterval(-hours * 3600) }
+        prompts.showDemo([
+            Prompt(title: "Review this diff", text: "Review the staged diff for bugs, regressions and missing tests. Rank findings by severity and skip style nits.",
+                   pinned: true, uses: 41, lastUsed: ago(0.3), created: ago(900)),
+            Prompt(title: "Plan before coding", text: "Before writing code, read the relevant files and write a short plan: the change, the files it touches, and how you will test it. Wait for my go-ahead.",
+                   pinned: true, uses: 23, lastUsed: ago(5), created: ago(800)),
+            Prompt(title: "Fix the failing test", text: "Run the test suite, find the first failing test, explain the root cause in two sentences, then fix it with the smallest change.",
+                   uses: 30, lastUsed: ago(2), created: ago(600)),
+            Prompt(title: "Write the PR description", text: "Write a PR description: a one-line summary, what changed and why, how it was tested, and anything a reviewer should look at first.",
+                   uses: 17, lastUsed: ago(26), created: ago(500)),
+            Prompt(title: "", text: "Explain this error like I am new to the codebase, then show the fix.\nInclude the file and line you changed.",
+                   uses: 9, lastUsed: ago(50), created: ago(400)),
+            Prompt(title: "Tighten the copy", text: "Rewrite this UI copy so it is shorter and plainer. Keep every fact. No exclamation marks.",
+                   uses: 4, lastUsed: ago(120), created: ago(300)),
+            Prompt(title: "Add a regression test", text: "Add one focused test that fails without this fix and passes with it.", created: ago(1)),
+        ])
+    }
+
     /// A calm, slightly uneven trace, the same every run.
     private static func wave(base: Double, amplitude: Double, seed: Double) -> [Double] {
         (0..<36).map { i in

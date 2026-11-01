@@ -5,7 +5,8 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = Settings()
     private lazy var store = ServerStore(settings: settings)
-    private lazy var panel = PanelController(store: store)
+    private let prompts = PromptStore()
+    private lazy var panel = PanelController(store: store, prompts: prompts)
     private var statusItem: NSStatusItem!
     private let hotKey = HotKey()
     private var lastClose = Date.distantPast
@@ -35,15 +36,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `VibeKit --toggle` opens or closes the panel of the running copy, for scripts and launchers.
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(toggleRequested), name: AppDelegate.toggleNotification, object: nil)
+        // Services › Add to Vibe Kit, in the right-click menu of selected text in any app.
+        NSApp.servicesProvider = self
+        NSUpdateDynamicServices()
+        // Load SwiftUI before the first click, once launch has settled.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.panel.prewarm() }
+    }
+
+    /// The Services menu item. Saves the selected text as a prompt and opens it so you can name it.
+    @objc func addPrompt(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        guard let text = pasteboard.string(forType: .string), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            error.pointee = "No text was selected." as NSString
+            return
+        }
+        let prompt = prompts.add(text: text)
+        settings.lastTab = .prompts
+        panel.show(from: statusItem.button, tab: .prompts, route: .prompt(prompt.id))
     }
 
     static let toggleNotification = Notification.Name("dev.vibekit.toggle")
 
-    @objc private func toggleRequested() { panel.toggle(from: statusItem.button) }
+    @objc private func toggleRequested(_ notification: Notification) {
+        let tab = (notification.userInfo?["tab"] as? String).flatMap(PanelTab.init(rawValue:))
+        panel.toggle(from: statusItem.button, tab: tab)
+    }
 
     private func observeSettings() {
         withObservationTracking {
             _ = settings.hotKeyEnabled
+            _ = settings.promptsHotKeyEnabled
             _ = settings.showCountInMenuBar
             _ = settings.showOtherListeners
         } onChange: { [weak self] in
@@ -58,11 +79,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyHotKey() {
-        if settings.hotKeyEnabled {
-            hotKey.register { [weak self] in self?.togglePanel() }
-        } else {
-            hotKey.unregister()
-        }
+        hotKey.set(.panel, enabled: settings.hotKeyEnabled) { [weak self] in self?.togglePanel(tab: .servers) }
+        hotKey.set(.prompts, enabled: settings.promptsHotKeyEnabled) { [weak self] in self?.togglePanel(tab: .prompts) }
     }
 
     private func updateStatusItem(count: Int) {
@@ -87,10 +105,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func togglePanel() {
+    private func togglePanel(tab: PanelTab? = nil) {
         // A click on the icon first closes the panel through resign-key; do not reopen it straight away.
         if !panel.isVisible && Date().timeIntervalSince(lastClose) < 0.25 { return }
-        panel.toggle(from: statusItem.button)
+        panel.toggle(from: statusItem.button, tab: tab)
     }
 
     private func showMenu() {
