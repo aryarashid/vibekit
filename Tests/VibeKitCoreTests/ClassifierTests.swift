@@ -111,6 +111,11 @@ struct CommandLineTests {
         #expect(CommandLine.display(["echo", "hello world", "it's", ""]) == "echo 'hello world' 'it'\\''s' ''")
     }
 
+    @Test func quotesShellCharacters() {
+        #expect(CommandLine.display(["serve", "--directory", "site&docs", "$HOME", "*.md"]) == "serve --directory 'site&docs' '$HOME' '*.md'")
+        #expect(CommandLine.display(["vite", "--port=3000", "--host", "0.0.0.0"]) == "vite --port=3000 --host 0.0.0.0")
+    }
+
     @Test func friendlyShortensPaths() {
         let argv = ["/opt/homebrew/bin/node", "/Users/dev/code/app/node_modules/.bin/vite", "--port", "3000"]
         #expect(CommandLine.friendly(argv, home: home) == "vite --port 3000")
@@ -251,6 +256,39 @@ struct AddressTests {
         #expect(server([PortBinding(port: 5173, address: "fd00::5", isIPv6: true)]).localURL?.absoluteString == "http://[fd00::5]:5173")
         // `localhost` does not reach a loopback alias.
         #expect(server([PortBinding(port: 5173, address: "127.0.0.2", isIPv6: false)]).localURL?.absoluteString == "http://127.0.0.2:5173")
+    }
+
+    @Test func ipv6OnlyListenerGetsNoIPv4NetworkURL() {
+        let v6only = server([PortBinding(port: 3000, address: "::", isIPv6: true, acceptsIPv4: false)])
+        #expect(v6only.networkURL(host: "192.168.1.24") == nil)
+        let dual = server([PortBinding(port: 3000, address: "::", isIPv6: true, acceptsIPv4: true)])
+        #expect(dual.networkURL(host: "192.168.1.24")?.absoluteString == "http://192.168.1.24:3000")
+    }
+
+    @Test func socketListerSeesDualStack() throws {
+        func makeListener(v6only: Int32) throws -> (fd: Int32, port: UInt16) {
+            let fd = socket(AF_INET6, SOCK_STREAM, 0)
+            try #require(fd >= 0)
+            var only = v6only
+            setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &only, socklen_t(MemoryLayout<Int32>.size))
+            var addr = sockaddr_in6()
+            addr.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+            addr.sin6_family = sa_family_t(AF_INET6)
+            addr.sin6_addr = in6addr_any
+            var length = socklen_t(MemoryLayout<sockaddr_in6>.size)
+            let ok = withUnsafeMutablePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    bind(fd, $0, length) == 0 && listen(fd, 1) == 0 && getsockname(fd, $0, &length) == 0
+                }
+            }
+            try #require(ok)
+            return (fd, UInt16(bigEndian: addr.sin6_port))
+        }
+        let dual = try makeListener(v6only: 0), only = try makeListener(v6only: 1)
+        defer { close(dual.fd); close(only.fd) }
+        let bindings = LibProc.SocketLister().listeningSockets(getpid())
+        #expect(bindings.first { $0.port == dual.port }?.acceptsIPv4 == true)
+        #expect(bindings.first { $0.port == only.port }?.acceptsIPv4 == false)
     }
 
     @Test func networkURLUsesTheExposedPort() {

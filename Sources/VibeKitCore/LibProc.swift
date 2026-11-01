@@ -103,7 +103,8 @@ public enum LibProc {
                 let port = UInt16(bigEndian: UInt16(truncatingIfNeeded: ini.insi_lport))
                 let isV6 = ini.insi_vflag & UInt8(INI_IPV6) != 0
                 let address = isV6 ? LibProc.ipv6String(ini.insi_laddr.ina_6) : LibProc.ipv4String(ini.insi_laddr.ina_46.i46a_addr4)
-                result.append(PortBinding(port: port, address: address, isIPv6: isV6))
+                result.append(PortBinding(port: port, address: address, isIPv6: isV6,
+                                          acceptsIPv4: ini.insi_vflag & UInt8(INI_IPV4) != 0))
             }
             return result
         }

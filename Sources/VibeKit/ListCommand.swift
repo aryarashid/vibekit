@@ -5,7 +5,8 @@ import VibeKitCore
 enum ListCommand {
     static func run(all: Bool) {
         let scanner = PortScanner()
-        _ = scanner.scan(usageFor: [])
+        // The first scan is the CPU baseline for the second.
+        _ = scanner.scan(usageFor: Set(ServerCategory.allCases))
         usleep(300_000)
         let servers = scanner.scan(usageFor: Set(ServerCategory.allCases), fullSweep: true)
             .filter { all || $0.category != .other }

@@ -5,11 +5,14 @@ public struct PortBinding: Hashable, Sendable, Codable {
     public let port: UInt16
     public let address: String
     public let isIPv6: Bool
+    /// False for an IPv6 socket with `IPV6_V6ONLY`. A dual-stack `::` listener also takes IPv4.
+    public let acceptsIPv4: Bool
 
-    public init(port: UInt16, address: String, isIPv6: Bool) {
+    public init(port: UInt16, address: String, isIPv6: Bool, acceptsIPv4: Bool? = nil) {
         self.port = port
         self.address = address
         self.isIPv6 = isIPv6
+        self.acceptsIPv4 = acceptsIPv4 ?? !isIPv6
     }
 
     /// Bound to every interface, so other devices on the network can reach it.
@@ -164,18 +167,20 @@ public struct Server: Identifiable, Hashable, Sendable {
     }
 
     /// The URL for another device: the primary port if it is open to the network, else the first port that is.
+    /// `host` is an IPv4 address, so an IPv6-only listener gets none.
     public func networkURL(host: String?) -> URL? {
-        guard framework.speaksHTTP, let host, let exposed = ports.first(where: \.isWildcard) else { return nil }
+        guard framework.speaksHTTP, let host, let exposed = ports.first(where: { $0.isWildcard && $0.acceptsIPv4 }) else { return nil }
         return URL(string: "http://\(host):\(exposed.port)")
     }
 }
 
 public enum CommandLine {
-    /// Joins argv for display, quoting arguments that contain spaces.
+    /// Joins argv for display, quoting arguments the shell would change, so a copied command runs the same argv.
     public static func display(_ argv: [String]) -> String {
-        argv.map { arg in
+        let plain = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_./:=@%+,~"))
+        return argv.map { arg in
             if arg.isEmpty { return "''" }
-            if arg.rangeOfCharacter(from: .whitespacesAndNewlines) != nil || arg.contains("'") || arg.contains("\"") {
+            if arg.unicodeScalars.contains(where: { !plain.contains($0) }) {
                 return "'" + arg.replacingOccurrences(of: "'", with: "'\\''") + "'"
             }
             return arg

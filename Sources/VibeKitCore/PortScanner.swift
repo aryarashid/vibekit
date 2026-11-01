@@ -398,7 +398,9 @@ public final class PortScanner: @unchecked Sendable {
     /// One entry per port, the one named in argv first, then ascending.
     /// When a port is bound on several addresses, all interfaces wins, then localhost, so the URL reaches it.
     func orderedPorts(_ bindings: [PortBinding], hints: [String]) -> [PortBinding] {
-        func reach(_ binding: PortBinding) -> Int { binding.isWildcard ? 3 : binding.isLocalhost ? 2 : binding.isLoopback ? 1 : 0 }
+        func reach(_ binding: PortBinding) -> Int {
+            binding.isWildcard ? (binding.acceptsIPv4 ? 4 : 3) : binding.isLocalhost ? 2 : binding.isLoopback ? 1 : 0
+        }
         var byPort: [UInt16: PortBinding] = [:]
         for binding in bindings {
             if let existing = byPort[binding.port], reach(existing) >= reach(binding) { continue }
