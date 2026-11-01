@@ -248,6 +248,8 @@ struct AddressTests {
     @Test func specificAddressIsUsedAsIs() {
         #expect(server([PortBinding(port: 5173, address: "192.168.1.20", isIPv6: false)]).localURL?.absoluteString == "http://192.168.1.20:5173")
         #expect(server([PortBinding(port: 5173, address: "fd00::5", isIPv6: true)]).localURL?.absoluteString == "http://[fd00::5]:5173")
+        // `localhost` does not reach a loopback alias.
+        #expect(server([PortBinding(port: 5173, address: "127.0.0.2", isIPv6: false)]).localURL?.absoluteString == "http://127.0.0.2:5173")
     }
 
     @Test func reachableBindingWinsForAPort() {

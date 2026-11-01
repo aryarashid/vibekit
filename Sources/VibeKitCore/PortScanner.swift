@@ -220,8 +220,9 @@ public final class PortScanner: @unchecked Sendable {
         func runsAnotherServer(_ parent: pid_t, besides child: pid_t) -> Bool {
             for sibling in children[parent] ?? [] where sibling != child {
                 for pid in descendants(of: sibling, children: children) {
-                    // Workers that inherited the same listening socket (gunicorn, uvicorn --workers) are one server.
-                    if let ports = listeners[pid], !Set(ports).isSubset(of: sockets) { return true }
+                    // Workers that inherited the same listening socket (gunicorn, uvicorn --workers) are one server,
+                    // even if one of them also opens a port of its own, such as metrics.
+                    if let ports = listeners[pid], sockets.isDisjoint(with: ports) { return true }
                 }
             }
             return false
@@ -395,9 +396,9 @@ public final class PortScanner: @unchecked Sendable {
     }
 
     /// One entry per port, the one named in argv first, then ascending.
-    /// When a port is bound on several addresses, all interfaces wins, then loopback, so the URL reaches it.
+    /// When a port is bound on several addresses, all interfaces wins, then localhost, so the URL reaches it.
     func orderedPorts(_ bindings: [PortBinding], hints: [String]) -> [PortBinding] {
-        func reach(_ binding: PortBinding) -> Int { binding.isWildcard ? 2 : binding.isLoopback ? 1 : 0 }
+        func reach(_ binding: PortBinding) -> Int { binding.isWildcard ? 3 : binding.isLocalhost ? 2 : binding.isLoopback ? 1 : 0 }
         var byPort: [UInt16: PortBinding] = [:]
         for binding in bindings {
             if let existing = byPort[binding.port], reach(existing) >= reach(binding) { continue }

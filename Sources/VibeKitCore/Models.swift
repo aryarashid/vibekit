@@ -15,6 +15,8 @@ public struct PortBinding: Hashable, Sendable, Codable {
     /// Bound to every interface, so other devices on the network can reach it.
     public var isWildcard: Bool { address == "0.0.0.0" || address == "::" || address == "*" }
     public var isLoopback: Bool { address.hasPrefix("127.") || address == "::1" }
+    /// Reached by `localhost`. A loopback alias such as 127.0.0.2 is not.
+    public var isLocalhost: Bool { address == "127.0.0.1" || address == "::1" }
 }
 
 public enum ServerCategory: String, Sendable, Codable, CaseIterable {
@@ -148,7 +150,7 @@ public struct Server: Identifiable, Hashable, Sendable {
 
     /// How this Mac reaches the primary port: `localhost`, unless the server listens on one other address only.
     public var host: String {
-        guard let binding = ports.first, !binding.isWildcard, !binding.isLoopback else { return "localhost" }
+        guard let binding = ports.first, !binding.isWildcard, !binding.isLocalhost else { return "localhost" }
         let address = binding.address.replacingOccurrences(of: "%", with: "%25")
         return binding.isIPv6 ? "[\(address)]" : address
     }

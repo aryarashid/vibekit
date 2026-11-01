@@ -117,14 +117,23 @@ final class ServerStore {
     @ObservationIgnored private var stdinWriters: [Int32: Int32] = [:]
     /// Environments of servers stopped this session. Memory only, never written to disk.
     @ObservationIgnored private var recentEnvironments: [String: [String]] = [:]
-    @ObservationIgnored private var expectedSignatures: [String: String] = [:]
     @ObservationIgnored private var shellEnvironment: [String]?
     @ObservationIgnored private var toastTask: Task<Void, Never>?
     @ObservationIgnored private var lastCount = -1
     /// Recently stopped servers that Vibe Kit started, by PID, until their exit code arrives.
     @ObservationIgnored private var recentPids: [Int32: String] = [:]
     /// Servers Vibe Kit started this session, by PID, until they exit.
-    @ObservationIgnored private var launches: [Int32: (pendingID: String, entry: RecentServer, log: URL)] = [:]
+    @ObservationIgnored private var launches: [Int32: Launch] = [:]
+
+    private struct Launch {
+        let pendingID: String
+        /// What to show in Recently Stopped if it fails before it comes up.
+        let entry: RecentServer
+        let log: URL
+        let started: Date
+        /// Seen listening. Tracked apart from the spinner, which gives up after a while.
+        var isUp = false
+    }
 
     private static let historyLength = 36
 
@@ -213,18 +222,20 @@ final class ServerStore {
             saveRecents()
         }
 
-        // Clear pending work that has finished.
         let hadPending = !pending.isEmpty
-        for (id, state) in pending {
-            switch state {
-            case .stopping:
-                if !ids.contains(id) { pending[id] = nil }
-            case .restarting, .starting:
-                if let signature = expectedSignatures[id], running.contains(signature) {
-                    pending[id] = nil
-                    expectedSignatures[id] = nil
-                }
-            }
+        // A launch is up once its own process leads a server, or a server with its command started after it.
+        // Another copy of the same command that was already running does not count.
+        for (pid, launch) in launches where !launch.isUp {
+            let signature = launch.entry.launch.signature
+            guard sorted.contains(where: { $0.rootPid == pid || ($0.launch?.signature == signature && $0.startDate >= launch.started) })
+            else { continue }
+            launches[pid]?.isUp = true
+            if pending[launch.pendingID] != .stopping { pending[launch.pendingID] = nil }
+        }
+
+        // Clear pending work that has finished.
+        for (id, state) in pending where state == .stopping && !ids.contains(id) {
+            pending[id] = nil
         }
 
         for server in sorted where scanCategories.contains(server.category) {
@@ -242,7 +253,7 @@ final class ServerStore {
         // Ports where `localhost` could reach more than one server. Other listeners count: AirPlay holds 5000 and 7000.
         var owners: [UInt16: Set<String>] = [:]
         for server in sorted {
-            for binding in server.ports where binding.isWildcard || binding.isLoopback {
+            for binding in server.ports where binding.isWildcard || binding.isLocalhost {
                 owners[binding.port, default: []].insert(server.id)
             }
         }
@@ -345,7 +356,6 @@ final class ServerStore {
     func restart(_ server: Server) {
         guard let launch = server.launch, pending[server.id] == nil else { return }
         pending[server.id] = .restarting
-        expectedSignatures[server.id] = launch.signature
         schedule()
         Task {
             let result = await ProcessControl.stop(root: server.rootPid, started: server.startDate)
@@ -364,7 +374,6 @@ final class ServerStore {
     func start(_ recent: RecentServer) {
         guard pending[recent.id] == nil else { return }
         pending[recent.id] = .starting
-        expectedSignatures[recent.id] = recent.launch.signature
         schedule()
         launchServer(recent.launch, environment: recentEnvironments[recent.id], entry: recent, pendingID: recent.id)
     }
@@ -391,11 +400,12 @@ final class ServerStore {
                 env = shellEnvironment
             }
             let log = Self.logURL(name: name, port: entry.port, directory: spec.directory)
+            let started = Date().addingTimeInterval(-1)
             do {
                 let spawned = try ProcessControl.spawn(spec, environment: env ?? ShellEnvironment.fallback(), log: log) { pid, code in
                     Task { @MainActor in self.processExited(pid: pid, code: code) }
                 }
-                launches[spawned.pid] = (pendingID, entry, log)
+                launches[spawned.pid] = Launch(pendingID: pendingID, entry: entry, log: log, started: started)
                 stdinWriters[spawned.pid] = spawned.stdinWriter
                 if let started = LibProc.startDate(spawned.pid) {
                     managed["\(spawned.pid)-\(Int(started.timeIntervalSince1970))"] = ManagedProcess(pid: spawned.pid, started: started, log: log)
@@ -405,9 +415,8 @@ final class ServerStore {
                 // Clear the spinner if the server never binds its port, and say so.
                 try? await Task.sleep(for: .seconds(45))
                 // Still running but not listening. A launch that already exited has said why.
-                if pending[pendingID] != nil, launches[spawned.pid] != nil {
+                if pending[pendingID] != nil, let launch = launches[spawned.pid], !launch.isUp {
                     pending[pendingID] = nil
-                    expectedSignatures[pendingID] = nil
                     show(Toast(message: "\(name) did not open a port. Check its log.", isError: true))
                     schedule()
                 }
@@ -457,9 +466,8 @@ final class ServerStore {
         let recentID = recentPids.removeValue(forKey: pid)
         // It ended before its server came up, such as a syntax error on restart. Say so now, not after a timeout,
         // and keep it in the list so it can be started again.
-        if let launch, let state = pending[launch.pendingID], state != .stopping {
-            pending[launch.pendingID] = nil
-            expectedSignatures[launch.pendingID] = nil
+        if let launch, !launch.isUp {
+            if pending[launch.pendingID] != .stopping { pending[launch.pendingID] = nil }
             let crashed = Self.isCrash(code)
             add(launch.entry.stopped(crashed ? .crashed(code: code) : .exited, log: launch.log))
             let title = launch.entry.title

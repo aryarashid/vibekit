@@ -14,7 +14,7 @@ public enum ProcessControl {
     public static func stop(root: pid_t, started: Date, grace: TimeInterval = 4) async -> StopResult {
         let tree = identities(of: root, started: started)
         guard !tree.isEmpty else { return .stopped }
-        for process in tree { kill(process.pid, SIGTERM) }
+        for process in tree where process.isAlive { kill(process.pid, SIGTERM) }
 
         let deadline = Date().addingTimeInterval(grace)
         while Date() < deadline {
@@ -29,7 +29,7 @@ public enum ProcessControl {
 
     /// SIGKILL the whole tree immediately.
     public static func forceKill(root: pid_t, started: Date) {
-        for process in identities(of: root, started: started) { kill(process.pid, SIGKILL) }
+        for process in identities(of: root, started: started) where process.isAlive { kill(process.pid, SIGKILL) }
     }
 
     /// A PID and its start time. PIDs get reused, the pair does not.
@@ -41,8 +41,11 @@ public enum ProcessControl {
 
     /// The tree under `root`, or nothing if `root` is no longer the process that started at `started`.
     static func identities(of root: pid_t, started: Date) -> [Identity] {
-        guard let start = LibProc.startDate(root), abs(start.timeIntervalSince(started)) < 0.001 else { return [] }
-        return PortScanner.processTree(of: root).compactMap { pid in LibProc.startDate(pid).map { Identity(pid: pid, start: $0) } }
+        func isRoot() -> Bool { LibProc.startDate(root).map { abs($0.timeIntervalSince(started)) < 0.001 } ?? false }
+        guard isRoot() else { return [] }
+        let tree = PortScanner.processTree(of: root).compactMap { pid in LibProc.startDate(pid).map { Identity(pid: pid, start: $0) } }
+        // Check again: if the root was replaced while the table was read, the tree belongs to someone else.
+        return isRoot() ? tree : []
     }
 
     /// True for a live process. Zombies count as dead.
