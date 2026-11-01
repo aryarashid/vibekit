@@ -42,6 +42,12 @@ struct ClassifierTests {
         #expect(classifier.classify(f) == .tool)
     }
 
+    @Test func dashCAfterTheModuleBelongsToTheServer() {
+        let f = facts("/usr/bin/python3", ["python3", "-m", "gunicorn", "-c", "gunicorn.conf.py", "app:app"])
+        #expect(classifier.classify(f) == .gunicorn)
+        #expect(Classifier.runsInlinePython(["python3", "-u", "-W", "ignore", "-c", "print(1)"]))
+    }
+
     @Test func postgresIsADatabase() {
         let f = facts("/opt/homebrew/opt/postgresql@16/bin/postgres", ["postgres", "-D", "/Users/dev/pgdata"], cwd: "/")
         let framework = classifier.classify(f)

@@ -42,7 +42,7 @@ public struct Classifier: Sendable {
             return devOrTool(.node, facts)
         }
         if process.isPython {
-            if process.args.contains("-c") { return .tool }
+            if Self.runsInlinePython(facts.argv) { return .tool }
             if let match = Self.python(process) { return match }
             return devOrTool(.python, facts)
         }
@@ -154,6 +154,20 @@ public struct Classifier: Sendable {
             return isProject(dir)
         }
         return true
+    }
+
+    /// True for `python -c "code"`. Only options before the script or `-m` belong to Python, so
+    /// `python -m gunicorn -c gunicorn.conf.py` is a server with a config file.
+    static func runsInlinePython(_ argv: [String]) -> Bool {
+        var index = 1
+        while index < argv.count {
+            let arg = argv[index]
+            if arg == "-c" { return true }
+            if arg == "-m" || !arg.hasPrefix("-") { return false }
+            if arg == "-W" || arg == "-X" { index += 1 }  // These take a value.
+            index += 1
+        }
+        return false
     }
 
     @Sendable public static func looksLikeProject(_ dir: String) -> Bool {

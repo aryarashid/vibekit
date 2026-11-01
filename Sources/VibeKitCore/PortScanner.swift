@@ -292,7 +292,7 @@ public final class PortScanner: @unchecked Sendable {
         }
         // Python autoreloaders (Django, Flask, uvicorn --reload) run the server as a python child.
         if isPython(p) {
-            return isPython(child) && !p.facts.argv.contains("-c")
+            return isPython(child) && !Classifier.runsInlinePython(p.facts.argv)
         }
         return false
     }
