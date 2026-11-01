@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import VibeKitCore
 
 /// A borderless panel that drops from the menu bar like a system menu.
 /// It never activates Vibe Kit, so the app you were using stays frontmost.
@@ -21,6 +22,9 @@ final class Panel: NSPanel {
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// The panel sits exactly where it was put. AppKit must not nudge it, for example when the menu bar hides.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
 
 enum PanelMetrics {
@@ -33,42 +37,78 @@ enum PanelMetrics {
 final class PanelController: NSObject, NSWindowDelegate {
     private let panel = Panel()
     private let store: ServerStore
+    private let prompts: PromptStore
     private var monitor: Any?
     private var placement: Placement?
     private var contentHeight: CGFloat = 200
 
     /// True while the panel fades out after `close()`.
     private var closing = false
+    /// True while the panel is open off screen to warm up. It does not count as visible.
+    private var prewarming = false
+    private weak var hostingView: NSView?
+    private var positioning = false
+    private var deferredHeight: CGFloat?
+    /// Counts opens, so work scheduled for one open can tell when the panel has opened again since.
+    private var opens = 0
 
-    var isVisible: Bool { panel.isVisible && !closing }
+    var isVisible: Bool { panel.isVisible && !closing && !prewarming }
     var onVisibilityChange: ((Bool) -> Void)?
 
-    init(store: ServerStore) {
+    init(store: ServerStore, prompts: PromptStore) {
         self.store = store
+        self.prompts = prompts
         super.init()
         panel.delegate = self
+        // Displays come and go, and the menu bar can change height. Keep the open panel under it and on screen.
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil,
+                                               queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.screensChanged() }
+        }
     }
 
-    func toggle(from button: NSStatusBarButton?) {
-        if isVisible { close() } else { show(from: button) }
+    /// Opens on `tab`, or on the tab used last. A second press of the same shortcut closes the panel;
+    /// a different tab's shortcut switches to it.
+    func toggle(from button: NSStatusBarButton?, tab: PanelTab? = nil) {
+        if isVisible {
+            if let tab, tab != store.settings.lastTab { show(from: button, tab: tab) } else { close() }
+        } else {
+            show(from: button, tab: tab)
+        }
     }
 
-    func show(from button: NSStatusBarButton?) {
-        placement = Placement(button: button)
+    func show(from button: NSStatusBarButton?, tab: PanelTab? = nil, route: Route = .list) {
+        if prewarming {
+            prewarming = false
+            panel.orderOut(nil)
+        }
+        let wasVisible = isVisible
+        if !wasVisible { placement = Placement(button: button) }
         closing = false
+        opens += 1
+        var initial = PanelRootView.InitialState()
+        initial.tab = tab ?? store.settings.lastTab
+        initial.route = route
+        // The view only reports tab changes made inside it. `toggle` needs to know the tab it opened on.
+        store.settings.lastTab = initial.tab
         // Build the SwiftUI tree fresh on every open and drop it on close, so nothing renders while hidden.
-        let root = PanelRootView(store: store, onHeightChange: { [weak self] height in self?.resize(to: height) }, close: { [weak self] in self?.close() })
-        let hosting = NSHostingView(rootView: root)
+        let hosting = NSHostingView(rootView: makeRoot(initial: initial))
         hosting.sizingOptions = []
+        hostingView = hosting
         panel.contentView = makeBackground(containing: hosting)
 
         store.isPanelOpen = true
         position(height: contentHeight)
-        panel.alphaValue = 0
-        panel.makeKeyAndOrderFront(nil)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.12
-            panel.animator().alphaValue = 1
+        if wasVisible {
+            panel.alphaValue = 1
+            panel.makeKey()
+        } else {
+            panel.alphaValue = 0
+            panel.makeKeyAndOrderFront(nil)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                panel.animator().alphaValue = 1
+            }
         }
         onVisibilityChange?(true)
 
@@ -78,8 +118,53 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
     }
 
-    func close() {
-        guard panel.isVisible, !closing else { return }
+    private func makeRoot(initial: PanelRootView.InitialState) -> PanelRootView {
+        PanelRootView(store: store, prompts: prompts,
+                      onHeightChange: { [weak self] height in self?.resize(to: height) },
+                      onUsePrompt: { [weak self] prompt in self?.use(prompt) },
+                      close: { [weak self] in self?.close() },
+                      initial: initial)
+    }
+
+    /// Copies the prompt, closes, and pastes it into the app in front when that is on and allowed.
+    private func use(_ prompt: Prompt) {
+        prompts.copy(prompt)
+        guard store.settings.pasteOnUse && PromptStore.canPaste else { return close() }
+        let open = opens
+        close { [weak self] in
+            // Give the app in front a moment to take keyboard focus back from the panel.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                MainActor.assumeIsolated {
+                    // Opened again meanwhile: the keystroke would land in the panel, not the app the prompt was for.
+                    guard let self, self.opens == open, !self.panel.isVisible else { return }
+                    PromptStore.pasteIntoFrontApp()
+                }
+            }
+        }
+    }
+
+    /// The first open after launch loads SwiftUI's code and sets up the window, which can take most of a second.
+    /// Opening the panel once, invisible and off every screen, shortly after launch moves that cost out of the first click.
+    func prewarm() {
+        guard !panel.isVisible else { return }
+        prewarming = true
+        let hosting = NSHostingView(rootView: makeRoot(initial: .init(tab: store.settings.lastTab)))
+        hosting.sizingOptions = []
+        panel.contentView = makeBackground(containing: hosting)
+        panel.alphaValue = 0
+        panel.setFrame(NSRect(x: -30_000, y: -30_000, width: PanelMetrics.width, height: contentHeight), display: false)
+        panel.orderFrontRegardless()
+        panel.displayIfNeeded()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self, self.prewarming else { return }
+            self.prewarming = false
+            self.panel.orderOut(nil)
+            self.panel.contentView = nil
+        }
+    }
+
+    func close(then completion: (@MainActor @Sendable () -> Void)? = nil) {
+        guard isVisible else { return }
         closing = true
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
@@ -94,6 +179,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                 self.panel.orderOut(nil)
                 self.panel.contentView = nil
                 self.store.isPanelOpen = false
+                completion?()
             }
         })
         onVisibilityChange?(false)
@@ -103,18 +189,24 @@ final class PanelController: NSObject, NSWindowDelegate {
         close()
     }
 
+    /// The panel's glass with the SwiftUI content inside. Frames, not Auto Layout: the glass does not resize its
+    /// content view by itself, and a stale content size showed the panel's content shifted or cut off.
+    /// `position` sets the content's frame on every resize.
     private func makeBackground(containing content: NSView) -> NSView {
-        content.translatesAutoresizingMaskIntoConstraints = false
+        let bounds = NSRect(x: 0, y: 0, width: PanelMetrics.width, height: contentHeight)
+        content.translatesAutoresizingMaskIntoConstraints = true
+        content.autoresizingMask = []
+        content.frame = bounds
         // Liquid Glass needs the macOS 26 SDK (Swift 6.2). Older toolchains build the material fallback only.
         #if compiler(>=6.2)
         if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView()
+            let glass = NSGlassEffectView(frame: bounds)
             glass.cornerRadius = PanelMetrics.cornerRadius
             glass.contentView = content
             return glass
         }
         #endif
-        let effect = NSVisualEffectView()
+        let effect = NSVisualEffectView(frame: bounds)
         effect.material = .popover
         effect.blendingMode = .behindWindow
         effect.state = .active
@@ -123,16 +215,40 @@ final class PanelController: NSObject, NSWindowDelegate {
         effect.layer?.cornerCurve = .continuous
         effect.layer?.masksToBounds = true
         effect.addSubview(content)
-        NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
-            content.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
-            content.topAnchor.constraint(equalTo: effect.topAnchor),
-            content.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
-        ])
         return effect
     }
 
+    /// Makes the SwiftUI view exactly fill the panel.
+    private func syncContentFrame() {
+        guard let background = panel.contentView, let content = hostingView, content.superview != nil else { return }
+        if content.frame != background.bounds { content.frame = background.bounds }
+    }
+
+    private func screensChanged() {
+        guard isVisible, let old = placement else { return }
+        // Keep the spot the panel opened at, but move it if that display is gone or its menu bar grew.
+        let fresh = Placement(button: nil, on: NSScreen.screens.contains(old.screen) ? old.screen : nil)
+        placement = Placement(screen: fresh.screen, midX: fresh.screen == old.screen ? old.midX : fresh.midX,
+                              top: min(fresh.screen == old.screen ? old.top : fresh.top, fresh.safeTop))
+        position(height: min(contentHeight, maxHeight()))
+    }
+
+    /// SwiftUI can report a new height while the panel is being resized, from inside `setFrame`. Applying it
+    /// there nests one resize in another, and the window and its content end up at different heights.
+    /// Such a report waits for the outer resize to finish.
     private func resize(to height: CGFloat) {
+        guard !positioning else {
+            let first = deferredHeight == nil
+            deferredHeight = height
+            if first {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, let height = self.deferredHeight else { return }
+                    self.deferredHeight = nil
+                    self.resize(to: height)
+                }
+            }
+            return
+        }
         let clamped = min(max(height, 120), maxHeight())
         guard abs(clamped - contentHeight) > 0.5 || !panel.isVisible else { return }
         contentHeight = clamped
@@ -146,10 +262,14 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func position(height: CGFloat) {
         guard let placement else { return }
+        positioning = true
+        defer { positioning = false }
         let width = PanelMetrics.width
         let visible = placement.screen.frame
         let x = min(max(placement.midX - width / 2, visible.minX + 8), visible.maxX - width - 8)
-        panel.setFrame(NSRect(x: x, y: placement.top - height, width: width, height: height), display: true)
+        panel.setFrame(NSRect(x: x, y: placement.top - height, width: width, height: height), display: false)
+        syncContentFrame()
+        panel.displayIfNeeded()
     }
 }
 
@@ -164,7 +284,20 @@ struct Placement {
     /// Top edge of the panel, just below where the menu bar sits even if it is hidden right now.
     let top: CGFloat
 
-    init(button: NSStatusBarButton?) {
+    /// The lowest the top edge may sit: under the menu bar and the camera housing, shown or hidden.
+    var safeTop: CGFloat { screen.frame.maxY - Self.menuBarHeight(on: screen) - 6 }
+
+    init(screen: NSScreen, midX: CGFloat, top: CGFloat) {
+        self.screen = screen
+        self.midX = midX
+        self.top = top
+    }
+
+    static func menuBarHeight(on screen: NSScreen) -> CGFloat {
+        max(NSStatusBar.system.thickness, screen.frame.maxY - screen.visibleFrame.maxY, screen.safeAreaInsets.top)
+    }
+
+    init(button: NSStatusBarButton?, on fixedScreen: NSScreen? = nil) {
         let screens = NSScreen.screens
         let pointer = NSEvent.mouseLocation
         let pointerScreen = screens.first { NSMouseInRect(pointer, $0.frame, false) } ?? NSScreen.main ?? screens[0]
@@ -178,9 +311,9 @@ struct Placement {
             screens.first { icon.midX >= $0.frame.minX && icon.midX < $0.frame.maxX && abs(icon.maxY - $0.frame.maxY) < 80 }
         }
         let opensFromClick = NSApp.currentEvent.map { $0.type == .leftMouseUp || $0.type == .rightMouseUp } ?? false
-        screen = (opensFromClick ? iconScreen : nil) ?? pointerScreen
+        screen = fixedScreen ?? (opensFromClick ? iconScreen : nil) ?? pointerScreen
 
-        let menuBar = max(NSStatusBar.system.thickness, screen.frame.maxY - screen.visibleFrame.maxY, screen.safeAreaInsets.top)
+        let menuBar = Self.menuBarHeight(on: screen)
         let underMenuBar = screen.frame.maxY - menuBar
         if let icon = iconFrame, iconScreen == screen, !Self.isUnderNotch(icon, on: screen) {
             midX = icon.midX

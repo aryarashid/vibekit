@@ -1,11 +1,14 @@
 import SwiftUI
+import VibeKitCore
 
 struct SettingsPage: View {
     let store: ServerStore
+    let prompts: PromptStore
     let back: () -> Void
     let onHeightChange: (CGFloat) -> Void
 
     private var settings: Settings { store.settings }
+    @State private var pasteAccess = PromptStore.canPaste
 
     var body: some View {
         @Bindable var settings = settings
@@ -19,6 +22,42 @@ struct SettingsPage: View {
                         toggle("Show server count in the menu bar", isOn: $settings.showCountInMenuBar)
                         toggle("Show other listeners (apps and system services)", isOn: $settings.showOtherListeners)
                         toggle("Open with ⌃⌥⌘V from anywhere", isOn: $settings.hotKeyEnabled)
+                        toggle("Open Prompts with ⌃⌥⌘P from anywhere", isOn: $settings.promptsHotKeyEnabled)
+                    }
+                    group("Prompts") {
+                        toggle("Paste into the app in front when you pick a prompt", isOn: Binding(
+                            get: { settings.pasteOnUse },
+                            set: { on in
+                                settings.pasteOnUse = on
+                                if on && !PromptStore.canPaste { PromptStore.requestPasteAccess() }
+                                pasteAccess = PromptStore.canPaste
+                            }))
+                        if settings.pasteOnUse && !pasteAccess {
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning)
+                                Text("Allow Vibe Kit under Privacy & Security › Accessibility. Until then, picking a prompt copies it.")
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: 0)
+                                Button("Open") { openAccessibilitySettings() }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(Theme.violet)
+                                    .fontWeight(.semibold)
+                            }
+                            .font(Theme.metaFont)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 4)
+                        }
+                        HStack {
+                            Text("Prompts file").font(.system(size: 12.5))
+                            Text("prompts.json").font(Theme.monoSmall).foregroundStyle(.tertiary)
+                            Spacer()
+                            Button("Show in Finder") { prompts.revealFile() }
+                                .controlSize(.small)
+                                .help("A readable JSON file. Edit it by hand or keep it in your dotfiles; Vibe Kit picks up changes.")
+                        }
+                        .padding(.horizontal, 16)
+                        .frame(height: 30)
                     }
                     group("Open projects with") {
                         picker("Editor", selection: $settings.editorID, apps: ExternalApp.editors)
@@ -33,6 +72,10 @@ struct SettingsPage: View {
                         shortcut("⌘⌫", "Stop")
                         shortcut("⇧⌘C", "Copy URL")
                         shortcut("⌘O  ⌘T", "Open in editor or terminal")
+                        shortcut("Tab", "Switch between servers and prompts")
+                        shortcut("↩  ⌘1–⌘9", "Use a prompt")
+                        shortcut("⌘N  ⌘E", "New or edit prompt")
+                        shortcut("⌘P", "Pin or unpin a prompt")
                     }
                     HStack(spacing: 10) {
                         VibeMark(live: true, size: 22)
@@ -47,6 +90,12 @@ struct SettingsPage: View {
                     .padding(.vertical, 14)
                 }
             }
+        }
+    }
+
+    private func openAccessibilitySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
         }
     }
 
@@ -68,11 +117,15 @@ struct SettingsPage: View {
     }
 
     private func toggle(_ title: String, isOn: Binding<Bool>) -> some View {
-        Toggle(isOn: isOn) {
+        // Switches line up in one column on the right, like System Settings.
+        HStack {
             Text(title).font(.system(size: 12.5))
+            Spacer(minLength: 8)
+            Toggle(title, isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
         }
-        .toggleStyle(.switch)
-        .controlSize(.mini)
         .padding(.horizontal, 16)
         .frame(height: 28)
     }

@@ -5,18 +5,37 @@ enum Route: Equatable {
     case list
     case settings
     case logs(Server)
+    /// The prompt editor. `nil` writes a new prompt.
+    case prompt(UUID?)
 }
 
 struct PanelRootView: View {
     let store: ServerStore
+    let prompts: PromptStore
     let onHeightChange: (CGFloat) -> Void
+    let onUsePrompt: (Prompt) -> Void
     let close: () -> Void
-    /// Starting state, used by `--snapshot` to render specific screens.
-    var initial = InitialState()
+    /// Starting state: the tab to show, and for `--snapshot` specific screens.
+    let initial: InitialState
 
-    @State private var route: Route = .list
+    @State private var route: Route
+    @State private var tab: PanelTab
+
+    init(store: ServerStore, prompts: PromptStore, onHeightChange: @escaping (CGFloat) -> Void,
+         onUsePrompt: @escaping (Prompt) -> Void, close: @escaping () -> Void, initial: InitialState = InitialState()) {
+        self.store = store
+        self.prompts = prompts
+        self.onHeightChange = onHeightChange
+        self.onUsePrompt = onUsePrompt
+        self.close = close
+        self.initial = initial
+        // Start on the right page, so opening on Prompts does not build the server list first.
+        _route = State(initialValue: initial.route)
+        _tab = State(initialValue: initial.tab)
+    }
 
     struct InitialState {
+        var tab: PanelTab = .servers
         var route: Route = .list
         var selectFirst = false
         var expandFirst = false
@@ -28,17 +47,25 @@ struct PanelRootView: View {
     var body: some View {
         Group {
             switch route {
+            case .list where tab == .prompts:
+                PromptListPage(store: store, prompts: prompts, tab: $tab, route: $route, onHeightChange: onHeightChange,
+                               onUse: onUsePrompt, close: close, initialQuery: initial.query,
+                               selectFirst: initial.selectFirst)
             case .list:
-                ServerListPage(store: store, route: $route, onHeightChange: onHeightChange, close: close, initial: initial)
+                ServerListPage(store: store, tab: $tab, route: $route, onHeightChange: onHeightChange, close: close, initial: initial)
             case .settings:
-                SettingsPage(store: store, back: { route = .list }, onHeightChange: onHeightChange)
+                SettingsPage(store: store, prompts: prompts, back: { route = .list }, onHeightChange: onHeightChange)
             case .logs(let server):
                 LogPage(server: server, store: store, back: { route = .list }, onHeightChange: onHeightChange)
+            case .prompt(let id):
+                PromptEditor(prompts: prompts, id: id, back: { route = .list }, onHeightChange: onHeightChange)
             }
         }
         .frame(width: PanelMetrics.width)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .onAppear { route = initial.route }
+        // Pinned to the top: if the panel is ever shorter than its content, the bottom gives way, never the header.
+        .frame(minHeight: 0, maxHeight: .infinity, alignment: .top)
+        .clipped()
+        .onChange(of: tab) { _, tab in store.settings.lastTab = tab }
     }
 }
 
@@ -107,6 +134,7 @@ private enum Item: Identifiable {
 
 struct ServerListPage: View {
     let store: ServerStore
+    @Binding var tab: PanelTab
     @Binding var route: Route
     let onHeightChange: (CGFloat) -> Void
     let close: () -> Void
@@ -177,6 +205,7 @@ struct ServerListPage: View {
                     if !query.isEmpty { query = "" } else if expanded != nil { expanded = nil } else { close() }
                     return .handled
                 }
+                .onKeyPress(.tab) { tab = .prompts; return .handled }
                 .onChange(of: query) { _, _ in
                     selection = nil
                     expanded = nil
@@ -184,6 +213,7 @@ struct ServerListPage: View {
             if !query.isEmpty {
                 IconButton(symbol: "xmark.circle.fill", help: "Clear search", size: 22) { query = "" }
             }
+            TabSwitch(tab: $tab)
             IconButton(symbol: "gearshape", help: "Settings") { route = .settings }
         }
         .padding(.leading, 15)

@@ -16,5 +16,9 @@ shot details-dark.png --dark --expand-port 3000
 shot details-light.png --expand-port 3000
 shot settings-dark.png --dark --settings
 shot settings-light.png --settings
+shot prompts-dark.png --dark --prompts --select
+shot prompts-light.png --prompts --select
+shot editor-dark.png --dark --prompts --edit-prompt
+shot editor-light.png --prompts --edit-prompt
 
 swift scripts/make-readme-art.swift "$SHOTS" docs/images

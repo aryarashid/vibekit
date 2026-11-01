@@ -97,6 +97,23 @@ enum Format {
         return uptime(since: date, now: now) + " ago"
     }
 
+    /// "now", "5m", "3h", "2d", "6w": for tight columns.
+    static func short(since date: Date, now: Date = Date()) -> String {
+        let minutes = max(0, Int(now.timeIntervalSince(date))) / 60
+        if minutes < 1 { return "now" }
+        if minutes < 60 { return "\(minutes)m" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours)h" }
+        let days = hours / 24
+        return days < 14 ? "\(days)d" : "\(days / 7)w"
+    }
+
+    /// A rough token count, at about four characters a token, which is close for English prose and code.
+    static func tokens(_ text: String) -> String {
+        let count = Int((Double(text.count) / 4).rounded())
+        return count == 1 ? "about 1 token" : "about \(count.formatted()) tokens"
+    }
+
     static func path(_ path: String) -> String {
         let home = NSHomeDirectory()
         return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
