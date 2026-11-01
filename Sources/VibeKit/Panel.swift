@@ -49,6 +49,8 @@ final class PanelController: NSObject, NSWindowDelegate {
     private weak var hostingView: NSView?
     private var positioning = false
     private var deferredHeight: CGFloat?
+    /// Counts opens, so work scheduled for one open can tell when the panel has opened again since.
+    private var opens = 0
 
     var isVisible: Bool { panel.isVisible && !closing && !prewarming }
     var onVisibilityChange: ((Bool) -> Void)?
@@ -83,9 +85,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         let wasVisible = isVisible
         if !wasVisible { placement = Placement(button: button) }
         closing = false
+        opens += 1
         var initial = PanelRootView.InitialState()
         initial.tab = tab ?? store.settings.lastTab
         initial.route = route
+        // The view only reports tab changes made inside it. `toggle` needs to know the tab it opened on.
+        store.settings.lastTab = initial.tab
         // Build the SwiftUI tree fresh on every open and drop it on close, so nothing renders while hidden.
         let hosting = NSHostingView(rootView: makeRoot(initial: initial))
         hosting.sizingOptions = []
@@ -125,9 +130,16 @@ final class PanelController: NSObject, NSWindowDelegate {
     private func use(_ prompt: Prompt) {
         prompts.copy(prompt)
         guard store.settings.pasteOnUse && PromptStore.canPaste else { return close() }
-        close {
+        let open = opens
+        close { [weak self] in
             // Give the app in front a moment to take keyboard focus back from the panel.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { PromptStore.pasteIntoFrontApp() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                MainActor.assumeIsolated {
+                    // Opened again meanwhile: the keystroke would land in the panel, not the app the prompt was for.
+                    guard let self, self.opens == open, !self.panel.isVisible else { return }
+                    PromptStore.pasteIntoFrontApp()
+                }
+            }
         }
     }
 

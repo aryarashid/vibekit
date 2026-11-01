@@ -49,6 +49,7 @@ struct PromptListPage: View {
     @State private var used: UUID?
     @State private var keyboardMoved = false
     @State private var clipboardText: String?
+    @State private var pendingUse: Task<Void, Never>?
     @FocusState private var searchFocused: Bool
 
     private static let headerHeight: CGFloat = 46
@@ -78,6 +79,7 @@ struct PromptListPage: View {
             if selectFirst { selection = PromptLibrary.search(prompts.prompts, query: initialQuery).first?.id }
             clipboardText = NSPasteboard.general.string(forType: .string).flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
         }
+        .onDisappear { pendingUse?.cancel() }
         .background(shortcuts(list))
     }
 
@@ -200,6 +202,14 @@ struct PromptListPage: View {
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Theme.violet)
                         .keyboardShortcut("z", modifiers: .command)
+                } else if let problem = prompts.problem {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning).font(.system(size: 11.5))
+                    Text(problem).font(Theme.metaFont).lineLimit(1).truncationMode(.tail).help(problem)
+                    Spacer(minLength: 6)
+                    Button("Show") { prompts.revealFile() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Theme.violet)
                 } else if let toast = store.toast {
                     Image(systemName: toast.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                         .foregroundStyle(toast.isError ? Theme.warning : Theme.live)
@@ -253,8 +263,10 @@ struct PromptListPage: View {
             return
         }
         used = prompt.id
-        Task {
+        pendingUse?.cancel()
+        pendingUse = Task {
             try? await Task.sleep(for: .milliseconds(320))
+            guard !Task.isCancelled else { return }
             onUse(prompt)
         }
     }
@@ -436,7 +448,8 @@ struct PromptEditor: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PageHeader(title: id == nil ? "New Prompt" : "Edit Prompt", subtitle: "Saved as you type", back: done) {
+            PageHeader(title: id == nil ? "New Prompt" : "Edit Prompt",
+                       subtitle: prompts.problem == nil ? "Saved as you type" : "Not saved", back: done) {
                 PillButton(title: "Done", symbol: "checkmark") { done() }
                     .keyboardShortcut(.return, modifiers: .command)
             }
@@ -468,9 +481,14 @@ struct PromptEditor: View {
             .padding(14)
             Divider().opacity(0.6)
             HStack(spacing: 8) {
-                Text("\(text.count.formatted()) characters · \(Format.tokens(text))")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.tertiary)
+                if let problem = prompts.problem {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning).font(.system(size: 11))
+                    Text(problem).font(Theme.metaFont).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail).help(problem)
+                } else {
+                    Text("\(text.count.formatted()) characters · \(Format.tokens(text))")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
                 Spacer()
                 if let current = savedID.flatMap(prompts.prompt) {
                     Button("Delete") {
@@ -494,26 +512,33 @@ struct PromptEditor: View {
                 text = prompt.text
             }
             onHeightChange(440)
-            focus = text.isEmpty ? .text : .text
+            focus = .text
         }
+        .onDisappear { removeIfEmptied() }
         .onChange(of: title) { _, _ in commit() }
         .onChange(of: text) { _, _ in commit() }
     }
 
+    private var isEmpty: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
     /// Saves as you type. A new prompt is created on its first character, and never saved while empty.
     private func commit() {
-        if let savedID, var prompt = prompts.prompt(savedID) {
-            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            prompt.title = title
-            prompt.text = text
-            prompts.update(prompt)
-        } else if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            savedID = prompts.add(text: text, title: title).id
-        }
+        guard !isEmpty else { return }
+        if let savedID, prompts.edit(savedID, { $0.title = title; $0.text = text }) { return }
+        // New, or deleted from the file while open: save it as a prompt of its own.
+        savedID = prompts.add(text: text, title: title).id
+    }
+
+    /// A prompt emptied and left is deleted, with Undo in the list, rather than keeping its old text.
+    private func removeIfEmptied() {
+        guard isEmpty, let id = savedID, let prompt = prompts.prompt(id) else { return }
+        savedID = nil
+        prompts.delete(prompt)
     }
 
     private func done() {
         commit()
+        removeIfEmptied()
         back()
     }
 }

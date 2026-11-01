@@ -9,11 +9,15 @@ final class PromptStore {
     private(set) var prompts: [Prompt] = []
     /// The last deleted prompt, so the footer can offer Undo for a few seconds.
     private(set) var deleted: Prompt?
+    /// Why changes are not reaching the file right now, shown in the panel. Nil when all is saved.
+    private(set) var problem: String?
 
     @ObservationIgnored private let file: URL
     @ObservationIgnored private var loadedAt: Date?
     @ObservationIgnored private var undoTask: Task<Void, Never>?
     @ObservationIgnored private let persists: Bool
+    /// The file exists but could not be read. Saving now would replace it, so nothing is saved until it reads again.
+    @ObservationIgnored private var unreadable = false
 
     static let defaultFile = ServerStore.supportDirectory.appendingPathComponent("prompts.json")
 
@@ -28,30 +32,48 @@ final class PromptStore {
     func prompt(_ id: UUID) -> Prompt? { prompts.first { $0.id == id } }
 
     /// Picks up edits made to the file outside Vibe Kit. Cheap: one stat call when nothing changed.
+    /// Every change calls it first, so a change never writes over an edit made elsewhere.
     func reloadIfChanged() {
         guard persists else { return }
         let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
         guard modified == nil || modified != loadedAt else { return }
         loadedAt = modified
-        prompts = PromptLibrary.load(from: file) ?? []
+        do {
+            prompts = try PromptLibrary.load(from: file)
+            unreadable = false
+            problem = nil
+        } catch {
+            // Keep what was last read, and leave the file alone until it reads again.
+            unreadable = true
+            problem = "prompts.json has an error, so nothing is saved"
+        }
     }
 
     @discardableResult
     func add(text: String, title: String = "") -> Prompt {
+        reloadIfChanged()
         let prompt = Prompt(title: title, text: text)
         prompts.append(prompt)
         save()
         return prompt
     }
 
-    func update(_ prompt: Prompt) {
-        guard let index = prompts.firstIndex(where: { $0.id == prompt.id }) else { return }
-        guard prompts[index] != prompt else { return }
+    /// Changes the stored prompt with this ID. Returns false when there is none, for example after it was
+    /// deleted in the file.
+    @discardableResult
+    func edit(_ id: UUID, _ change: (inout Prompt) -> Void) -> Bool {
+        reloadIfChanged()
+        guard let index = prompts.firstIndex(where: { $0.id == id }) else { return false }
+        var prompt = prompts[index]
+        change(&prompt)
+        guard prompts[index] != prompt else { return true }
         prompts[index] = prompt
         save()
+        return true
     }
 
     func delete(_ prompt: Prompt) {
+        reloadIfChanged()
         prompts.removeAll { $0.id == prompt.id }
         save()
         deleted = prompt
@@ -64,39 +86,41 @@ final class PromptStore {
 
     func undoDelete() {
         guard let deleted else { return }
-        prompts.append(deleted)
         self.deleted = nil
+        reloadIfChanged()
+        // It may be back already, restored in the file.
+        guard prompt(deleted.id) == nil else { return }
+        prompts.append(deleted)
         save()
     }
 
     func togglePin(_ prompt: Prompt) {
-        guard var current = self.prompt(prompt.id) else { return }
-        current.pinned.toggle()
-        update(current)
+        edit(prompt.id) { $0.pinned.toggle() }
     }
 
     /// Puts the prompt on the clipboard and counts the use.
     func copy(_ prompt: Prompt) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(prompt.text, forType: .string)
-        guard var current = self.prompt(prompt.id) else { return }
-        current.uses += 1
-        current.lastUsed = Date()
-        update(current)
+        edit(prompt.id) {
+            $0.uses += 1
+            $0.lastUsed = Date()
+        }
     }
 
     func revealFile() {
-        if !FileManager.default.fileExists(atPath: file.path) { save() }
+        if !FileManager.default.fileExists(atPath: file.path) { reloadIfChanged(); save() }
         NSWorkspace.shared.activateFileViewerSelecting([file])
     }
 
     private func save() {
-        guard persists else { return }
+        guard persists, !unreadable else { return }
         do {
             try PromptLibrary.save(prompts, to: file)
             loadedAt = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            problem = nil
         } catch {
-            NSLog("Vibe Kit: could not save prompts: \(error.localizedDescription)")
+            problem = "Could not save prompts: \(error.localizedDescription)"
         }
     }
 

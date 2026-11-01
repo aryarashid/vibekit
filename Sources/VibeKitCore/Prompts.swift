@@ -91,11 +91,18 @@ public enum PromptLibrary {
         return inTitle + inText
     }
 
-    public static func load(from url: URL) -> [Prompt]? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
+    /// No file means no prompts yet. A file that cannot be read or parsed throws, so it is never mistaken for an
+    /// empty library and overwritten.
+    public static func load(from url: URL) throws -> [Prompt] {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch CocoaError.fileReadNoSuchFile {
+            return []
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode([Prompt].self, from: data)
+        return try decoder.decode([Prompt].self, from: data)
     }
 
     public static func save(_ prompts: [Prompt], to url: URL) throws {

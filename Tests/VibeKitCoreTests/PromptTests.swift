@@ -39,12 +39,22 @@ struct PromptTests {
         defer { try? FileManager.default.removeItem(at: url) }
         let prompt = Prompt(title: "T", text: "Body", pinned: true, uses: 3, lastUsed: now, created: now)
         try PromptLibrary.save([prompt], to: url)
-        #expect(PromptLibrary.load(from: url) == [prompt])
+        #expect(try PromptLibrary.load(from: url) == [prompt])
 
         try Data(#"[{"text": "Only text"}]"#.utf8).write(to: url)
-        let loaded = try #require(PromptLibrary.load(from: url))
+        let loaded = try PromptLibrary.load(from: url)
         #expect(loaded.count == 1)
         #expect(loaded[0].text == "Only text")
         #expect(loaded[0].uses == 0 && !loaded[0].pinned)
+    }
+
+    @Test func missingFileIsEmptyButBrokenFileThrows() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("vk-prompts-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        #expect(try PromptLibrary.load(from: url) == [])
+
+        // Half way through a hand edit: must not read as an empty library.
+        try Data(#"[{"text": "Only text"},"#.utf8).write(to: url)
+        #expect(throws: (any Error).self) { try PromptLibrary.load(from: url) }
     }
 }
