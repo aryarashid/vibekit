@@ -75,7 +75,6 @@ public final class PortScanner: @unchecked Sendable {
         cache = cache.filter { table[$0.key] != nil }
         classified = classified.filter { table[$0.key] != nil }
 
-        let listenerSet = Set(listeners.keys)
         var units: [pid_t: Unit] = [:]
         for (pid, ports) in listeners {
             guard let process = inspect(pid) else { continue }
@@ -83,7 +82,7 @@ public final class PortScanner: @unchecked Sendable {
             known[pid]?.isOther = framework.category == .other
             let chain = framework.category == .other
                 ? [process]
-                : launchChain(from: process, table: table, children: children, listeners: listenerSet)
+                : launchChain(from: process, table: table, children: children, listeners: listeners)
             let root = chain[0]
             if var unit = units[root.pid] {
                 unit.listeners.append((process, ports))
@@ -212,14 +211,18 @@ public final class PortScanner: @unchecked Sendable {
     /// a Django autoreloader) and stops at a shell, terminal, agent or anything that also runs another server.
     /// Returns the chain from the topmost wrapper down to the listener.
     private func launchChain(from listener: Inspected, table: [pid_t: LibProc.ShortInfo],
-                             children: [pid_t: [pid_t]], listeners: Set<pid_t>) -> [Inspected] {
+                             children: [pid_t: [pid_t]], listeners: [pid_t: [PortBinding]]) -> [Inspected] {
         var chain = [listener]
         var current = listener
         let listenerDir = listener.facts.cwd ?? ""
+        let sockets = Set(listeners[listener.pid] ?? [])
 
         func runsAnotherServer(_ parent: pid_t, besides child: pid_t) -> Bool {
             for sibling in children[parent] ?? [] where sibling != child {
-                if descendants(of: sibling, children: children).contains(where: listeners.contains) { return true }
+                for pid in descendants(of: sibling, children: children) {
+                    // Workers that inherited the same listening socket (gunicorn, uvicorn --workers) are one server.
+                    if let ports = listeners[pid], !Set(ports).isSubset(of: sockets) { return true }
+                }
             }
             return false
         }
@@ -227,6 +230,12 @@ public final class PortScanner: @unchecked Sendable {
         while current.ppid > 1, table[current.ppid] != nil, chain.count < 8, let parent = inspect(current.ppid) {
             // Something that runs several servers (turbo, concurrently) is not part of this one.
             if runsAnotherServer(parent.pid, besides: current.pid) { break }
+            // A prefork master holds the socket its workers inherited, so it is the top of the same server.
+            if let ports = listeners[parent.pid], !sockets.isDisjoint(with: ports) {
+                chain.insert(parent, at: 0)
+                current = parent
+                continue
+            }
             let parentDir = parent.facts.cwd ?? "/"
             guard parentDir != "/", listenerDir == parentDir || listenerDir.hasPrefix(parentDir + "/") else { break }
 
@@ -355,9 +364,19 @@ public final class PortScanner: @unchecked Sendable {
             return LaunchSpec(executable: exact.facts.executable, arguments: exact.facts.argv, directory: dir,
                               viaShell: false, environment: Self.cleaned(exact.environment))
         }
-        guard let root = chain.first, let dir = root.facts.cwd else { return nil }
+        // Node rewrote argv into a title such as "npm run dev". Replay it through a shell only when it reads as a command.
+        guard let root = chain.first, let dir = root.facts.cwd, Self.isReplayableTitle(root.title) else { return nil }
         return LaunchSpec(executable: "/bin/sh", arguments: [root.title], directory: dir,
                           viaShell: true, environment: Self.cleaned(root.environment))
+    }
+
+    /// A title such as "pnpm run dev" can be run again through `sh -c`. One such as "next-server (v15.1.0)"
+    /// is not a command, and nothing with characters the shell treats specially is run.
+    static func isReplayableTitle(_ title: String) -> Bool {
+        let runners: Set<String> = ["npm", "npx", "pnpm", "pnpx", "yarn", "bun", "bunx", "node", "deno"]
+        guard let first = title.split(separator: " ").first, runners.contains(String(first)) else { return false }
+        let plain = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " _-./:=@%+,"))
+        return title.unicodeScalars.allSatisfy(plain.contains)
     }
 
     /// Drops variables that only make sense inside the old process tree.
@@ -371,11 +390,12 @@ public final class PortScanner: @unchecked Sendable {
     }
 
     /// One entry per port, the one named in argv first, then ascending.
-    /// When a port is bound on several addresses, the widest exposure wins.
+    /// When a port is bound on several addresses, all interfaces wins, then loopback, so the URL reaches it.
     func orderedPorts(_ bindings: [PortBinding], hints: [String]) -> [PortBinding] {
+        func reach(_ binding: PortBinding) -> Int { binding.isWildcard ? 2 : binding.isLoopback ? 1 : 0 }
         var byPort: [UInt16: PortBinding] = [:]
         for binding in bindings {
-            if let existing = byPort[binding.port], existing.isWildcard || !binding.isWildcard { continue }
+            if let existing = byPort[binding.port], reach(existing) >= reach(binding) { continue }
             byPort[binding.port] = binding
         }
         var hinted: UInt16?

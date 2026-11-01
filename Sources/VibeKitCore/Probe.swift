@@ -25,8 +25,8 @@ public enum Probe {
         return URLSession(configuration: config)
     }()
 
-    public static func page(port: UInt16) async -> PageInfo? {
-        guard let url = URL(string: "http://localhost:\(port)/") else { return nil }
+    public static func page(host: String = "localhost", port: UInt16) async -> PageInfo? {
+        guard let url = URL(string: "http://\(host):\(port)/") else { return nil }
         do {
             let (bytes, response) = try await session.bytes(from: url)
             guard let http = response as? HTTPURLResponse else { return nil }
@@ -69,8 +69,13 @@ public enum Probe {
 }
 
 public enum Network {
-    /// True when nothing holds `port`. Tries to bind it, which also catches root-owned listeners the scan cannot see.
+    /// True when nothing holds `port`. Tries to bind it on IPv4 and IPv6, which also catches root-owned
+    /// listeners the scan cannot see.
     public static func isPortFree(_ port: UInt16) -> Bool {
+        canBindIPv4(port) && canBindIPv6(port)
+    }
+
+    private static func canBindIPv4(_ port: UInt16) -> Bool {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return false }
         defer { close(fd) }
@@ -82,6 +87,24 @@ public enum Network {
         return withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+            }
+        }
+    }
+
+    private static func canBindIPv6(_ port: UInt16) -> Bool {
+        let fd = socket(AF_INET6, SOCK_STREAM, 0)
+        guard fd >= 0 else { return true }  // No IPv6 here, so nothing can listen on it.
+        defer { close(fd) }
+        var only: Int32 = 1
+        setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &only, socklen_t(MemoryLayout<Int32>.size))
+        var addr = sockaddr_in6()
+        addr.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+        addr.sin6_family = sa_family_t(AF_INET6)
+        addr.sin6_port = port.bigEndian
+        addr.sin6_addr = in6addr_any
+        return withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in6>.size)) == 0
             }
         }
     }

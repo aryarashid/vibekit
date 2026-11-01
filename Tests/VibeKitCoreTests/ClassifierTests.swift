@@ -218,3 +218,109 @@ struct ExitCodeTests {
         #expect(ProcessControl.exitCode(SIGSEGV | 0x80) == 139)  // core dumped
     }
 }
+
+@Suite("Restart commands")
+struct ReplayTests {
+    @Test func plainRunnerTitlesReplay() {
+        #expect(PortScanner.isReplayableTitle("npm run dev"))
+        #expect(PortScanner.isReplayableTitle("pnpm --filter @acme/web dev -- --port=3000"))
+    }
+
+    @Test func titlesThatAreNotCommandsDoNot() {
+        #expect(!PortScanner.isReplayableTitle("next-server (v15.1.0)"))
+        #expect(!PortScanner.isReplayableTitle("npm run dev $(touch x)"))
+        #expect(!PortScanner.isReplayableTitle("npm run dev; rm -rf ~"))
+    }
+}
+
+@Suite("Addresses")
+struct AddressTests {
+    private func server(_ bindings: [PortBinding]) -> Server {
+        Server(id: "s", pid: 1, rootPid: 1, listenerPids: [1], startDate: Date(), ports: bindings, framework: .vite,
+               project: nil, processName: "vite", executable: "/bin/node", command: "vite", directory: nil, launch: nil)
+    }
+
+    @Test func loopbackAndWildcardUseLocalhost() {
+        #expect(server([PortBinding(port: 5173, address: "::1", isIPv6: true)]).localURL?.absoluteString == "http://localhost:5173")
+        #expect(server([PortBinding(port: 5173, address: "0.0.0.0", isIPv6: false)]).localURL?.absoluteString == "http://localhost:5173")
+    }
+
+    @Test func specificAddressIsUsedAsIs() {
+        #expect(server([PortBinding(port: 5173, address: "192.168.1.20", isIPv6: false)]).localURL?.absoluteString == "http://192.168.1.20:5173")
+        #expect(server([PortBinding(port: 5173, address: "fd00::5", isIPv6: true)]).localURL?.absoluteString == "http://[fd00::5]:5173")
+    }
+
+    @Test func reachableBindingWinsForAPort() {
+        let ports = PortScanner().orderedPorts([
+            PortBinding(port: 3000, address: "192.168.1.20", isIPv6: false),
+            PortBinding(port: 3000, address: "127.0.0.1", isIPv6: false),
+        ], hints: [])
+        #expect(ports == [PortBinding(port: 3000, address: "127.0.0.1", isIPv6: false)])
+    }
+
+    @Test func portHeldOnlyOnIPv6IsNotFree() throws {
+        let fd = socket(AF_INET6, SOCK_STREAM, 0)
+        try #require(fd >= 0)
+        defer { close(fd) }
+        var addr = sockaddr_in6()
+        addr.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+        addr.sin6_family = sa_family_t(AF_INET6)
+        addr.sin6_addr = in6addr_loopback
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in6>.size)) }
+        }
+        try #require(bound == 0 && listen(fd, 1) == 0)
+        var length = socklen_t(MemoryLayout<sockaddr_in6>.size)
+        _ = withUnsafeMutablePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) }
+        }
+        #expect(!Network.isPortFree(UInt16(bigEndian: addr.sin6_port)))
+    }
+}
+
+@Suite("Process control", .timeLimit(.minutes(1)))
+struct ProcessControlTests {
+    private func sleeper() throws -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        try process.run()
+        return process
+    }
+
+    @Test func doesNotSignalAReusedPid() async throws {
+        let process = try sleeper()
+        defer { process.terminate() }
+        let result = await ProcessControl.stop(root: process.processIdentifier, started: Date(timeIntervalSince1970: 0), grace: 0.2)
+        #expect(result == .stopped)
+        #expect(ProcessControl.isAlive(process.processIdentifier))
+    }
+
+    @Test func stopsTheProcessThatStartedThen() async throws {
+        let process = try sleeper()
+        let started = try #require(LibProc.startDate(process.processIdentifier))
+        let result = await ProcessControl.stop(root: process.processIdentifier, started: started, grace: 2)
+        #expect(result == .stopped)
+        process.waitUntilExit()
+        #expect(process.terminationReason == .uncaughtSignal)
+    }
+
+    @Test func reportsTheExitCodeOfASpawnedServer() async throws {
+        let log = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("vibekit-exit-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: log) }
+        let spec = LaunchSpec(executable: "/bin/sh", arguments: ["sh", "-c", "echo boom; exit 3"], directory: NSTemporaryDirectory(),
+                              viaShell: false, environment: nil)
+        let code: Int32 = try await withCheckedThrowingContinuation { continuation in
+            do {
+                let spawned = try ProcessControl.spawn(spec, environment: ["PATH=/usr/bin:/bin"], log: log) { _, code in
+                    continuation.resume(returning: code)
+                }
+                close(spawned.stdinWriter)
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
+        #expect(code == 3)
+        #expect(try String(contentsOf: log, encoding: .utf8) == "boom\n")
+    }
+}

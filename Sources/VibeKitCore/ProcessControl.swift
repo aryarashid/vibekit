@@ -10,25 +10,39 @@ public enum ProcessControl {
 
     /// Sends SIGTERM to `root` and everything under it, like Ctrl-C in the terminal that started it,
     /// then SIGKILL to whatever is still alive after `grace` seconds.
-    public static func stop(root: pid_t, grace: TimeInterval = 4) async -> StopResult {
-        let tree = PortScanner.processTree(of: root)
+    /// `started` is the root's start time from the scan. If the PID now belongs to another process, nothing is signalled.
+    public static func stop(root: pid_t, started: Date, grace: TimeInterval = 4) async -> StopResult {
+        let tree = identities(of: root, started: started)
         guard !tree.isEmpty else { return .stopped }
-        for pid in tree { kill(pid, SIGTERM) }
+        for process in tree { kill(process.pid, SIGTERM) }
 
         let deadline = Date().addingTimeInterval(grace)
         while Date() < deadline {
-            if !tree.contains(where: isAlive) { return .stopped }
+            if !tree.contains(where: \.isAlive) { return .stopped }
             try? await Task.sleep(for: .milliseconds(100))
         }
-        let survivors = tree.filter(isAlive)
-        for pid in survivors { kill(pid, SIGKILL) }
+        // `isAlive` checks the start time again, so a PID reused during the grace period is left alone.
+        for process in tree where process.isAlive { kill(process.pid, SIGKILL) }
         try? await Task.sleep(for: .milliseconds(200))
-        return tree.contains(where: isAlive) ? .failed : .forced
+        return tree.contains(where: \.isAlive) ? .failed : .forced
     }
 
     /// SIGKILL the whole tree immediately.
-    public static func forceKill(root: pid_t) {
-        for pid in PortScanner.processTree(of: root) { kill(pid, SIGKILL) }
+    public static func forceKill(root: pid_t, started: Date) {
+        for process in identities(of: root, started: started) { kill(process.pid, SIGKILL) }
+    }
+
+    /// A PID and its start time. PIDs get reused, the pair does not.
+    struct Identity {
+        let pid: pid_t
+        let start: Date
+        var isAlive: Bool { ProcessControl.isAlive(pid) && LibProc.startDate(pid) == start }
+    }
+
+    /// The tree under `root`, or nothing if `root` is no longer the process that started at `started`.
+    static func identities(of root: pid_t, started: Date) -> [Identity] {
+        guard let start = LibProc.startDate(root), abs(start.timeIntervalSince(started)) < 0.001 else { return [] }
+        return PortScanner.processTree(of: root).compactMap { pid in LibProc.startDate(pid).map { Identity(pid: pid, start: $0) } }
     }
 
     /// True for a live process. Zombies count as dead.
@@ -58,7 +72,6 @@ public enum ProcessControl {
         }
     }
 
-    /// Starts `spec` in its own session, detached from Vibe Kit, with stdout and stderr going to `log`.
     /// Starts `spec` in its own session with output going to `log`.
     /// `onExit` gets the PID and exit code when the process ends (128 + signal number when a signal ended it).
     public static func spawn(_ spec: LaunchSpec, environment: [String], log: URL,
@@ -127,16 +140,20 @@ public enum ProcessControl {
     /// We are the parent of spawned servers, so we must reap them or they linger as zombies.
     private static func reapWhenDone(_ pid: pid_t, onExit: @escaping @Sendable (pid_t, Int32) -> Void) {
         let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .global(qos: .utility))
-        let reap: @Sendable () -> Void = {
+        let reap: @Sendable (_ block: Bool) -> Void = { block in
             var status: Int32 = 0
-            guard waitpid(pid, &status, WNOHANG) == pid else { return }
+            var result: pid_t
+            repeat { result = waitpid(pid, &status, block ? 0 : WNOHANG) } while result == -1 && errno == EINTR
+            guard result == pid else { return }
             source.cancel()
             onExit(pid, exitCode(status))
         }
-        source.setEventHandler(handler: reap)
+        // The exit event can arrive a moment before the child becomes a zombie, and it fires only once,
+        // so this wait blocks until the child can be reaped. It returns at once if the check below got it first.
+        source.setEventHandler { reap(true) }
         source.resume()
         // The process may have exited before the source was armed.
-        reap()
+        reap(false)
     }
 
     /// Decodes a `waitpid` status: the exit code, or 128 + the signal number, like a shell's `$?`.

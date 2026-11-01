@@ -146,12 +146,19 @@ public struct Server: Identifiable, Hashable, Sendable {
         return processName == raw ? nil : processName
     }
 
+    /// How this Mac reaches the primary port: `localhost`, unless the server listens on one other address only.
+    public var host: String {
+        guard let binding = ports.first, !binding.isWildcard, !binding.isLoopback else { return "localhost" }
+        let address = binding.address.replacingOccurrences(of: "%", with: "%25")
+        return binding.isIPv6 ? "[\(address)]" : address
+    }
+
     public var localURL: URL? {
         if let scheme = framework.urlScheme {
-            return URL(string: "\(scheme)://localhost:\(primaryPort)")
+            return URL(string: "\(scheme)://\(host):\(primaryPort)")
         }
         guard framework.speaksHTTP else { return nil }
-        return URL(string: "http://localhost:\(primaryPort)")
+        return URL(string: "http://\(host):\(primaryPort)")
     }
 
     public func networkURL(host: String?) -> URL? {

@@ -16,6 +16,30 @@ struct RecentServer: Codable, Identifiable, Hashable {
     var reason: StopReason?
     /// Log file, for servers Vibe Kit started.
     var log: URL?
+
+    init(title: String, frameworkName: String, frameworkColor: UInt32?, port: UInt16, branch: String?, launch: LaunchSpec,
+         stoppedAt: Date, reason: StopReason? = nil, log: URL? = nil) {
+        self.title = title
+        self.frameworkName = frameworkName
+        self.frameworkColor = frameworkColor
+        self.port = port
+        self.branch = branch
+        self.launch = launch
+        self.stoppedAt = stoppedAt
+        self.reason = reason
+        self.log = log
+    }
+
+    init(_ server: Server, launch: LaunchSpec, reason: StopReason, log: URL?) {
+        self.init(title: server.title, frameworkName: server.framework.name, frameworkColor: server.framework.color,
+                  port: server.primaryPort, branch: server.project?.branch, launch: launch, stoppedAt: Date(), reason: reason, log: log)
+    }
+
+    /// The same server, stopped just now.
+    func stopped(_ reason: StopReason, log: URL?) -> RecentServer {
+        RecentServer(title: title, frameworkName: frameworkName, frameworkColor: frameworkColor, port: port, branch: branch,
+                     launch: launch, stoppedAt: Date(), reason: reason, log: log)
+    }
 }
 
 /// Why a server went away, so a crash does not look like a normal stop.
@@ -99,6 +123,8 @@ final class ServerStore {
     @ObservationIgnored private var lastCount = -1
     /// Recently stopped servers that Vibe Kit started, by PID, until their exit code arrives.
     @ObservationIgnored private var recentPids: [Int32: String] = [:]
+    /// Servers Vibe Kit started this session, by PID, until they exit.
+    @ObservationIgnored private var launches: [Int32: (pendingID: String, entry: RecentServer, log: URL)] = [:]
 
     private static let historyLength = 36
 
@@ -213,9 +239,12 @@ final class ServerStore {
         probeAttempts = probeAttempts.filter { ids.contains($0.key) }
         retryAt = retryAt.filter { ids.contains($0.key) }
 
+        // Ports where `localhost` could reach more than one server. Other listeners count: AirPlay holds 5000 and 7000.
         var owners: [UInt16: Set<String>] = [:]
-        for server in sorted where server.category != .other {
-            for port in Set(server.ports.map(\.port)) { owners[port, default: []].insert(server.id) }
+        for server in sorted {
+            for binding in server.ports where binding.isWildcard || binding.isLoopback {
+                owners[binding.port, default: []].insert(server.id)
+            }
         }
         let shared = Set(owners.filter { $0.value.count > 1 }.keys)
         if shared != sharedPorts { sharedPorts = shared }
@@ -247,9 +276,10 @@ final class ServerStore {
             probing.insert(server.id)
             staleProbes.remove(server.id)
             let id = server.id
+            let host = server.host
             let port = server.primaryPort
             Task {
-                let page = await Probe.page(port: port)
+                let page = await Probe.page(host: host, port: port)
                 self.probing.remove(id)
                 guard self.servers.contains(where: { $0.id == id }) else { return }
                 if let page {
@@ -263,6 +293,8 @@ final class ServerStore {
                     let delays: [TimeInterval] = [2, 4, 8, 15, 30, 60]
                     self.retryAt[id] = Date().addingTimeInterval(delays[min(attempts - 1, delays.count - 1)])
                     if attempts >= 2 || self.pages[id] != nil { self.unanswered.insert(id) }
+                    // A cached page would stop the retries, so keep the server due for another look.
+                    if self.pages[id] != nil { self.staleProbes.insert(id) }
                 }
             }
         }
@@ -291,7 +323,7 @@ final class ServerStore {
         pending[server.id] = .stopping
         schedule()
         Task {
-            let result = await ProcessControl.stop(root: server.rootPid)
+            let result = await ProcessControl.stop(root: server.rootPid, started: server.startDate)
             if result == .failed {
                 pending[server.id] = nil
                 show(Toast(message: "Could not stop \(server.title)", isError: true))
@@ -302,7 +334,7 @@ final class ServerStore {
 
     func forceQuit(_ server: Server) {
         pending[server.id] = .stopping
-        ProcessControl.forceKill(root: server.rootPid)
+        ProcessControl.forceKill(root: server.rootPid, started: server.startDate)
         scanNow()
     }
 
@@ -316,7 +348,7 @@ final class ServerStore {
         expectedSignatures[server.id] = launch.signature
         schedule()
         Task {
-            let result = await ProcessControl.stop(root: server.rootPid)
+            let result = await ProcessControl.stop(root: server.rootPid, started: server.startDate)
             guard result != .failed else {
                 pending[server.id] = nil
                 show(Toast(message: "Could not stop \(server.title)", isError: true))
@@ -324,7 +356,8 @@ final class ServerStore {
             }
             // Give the kernel a moment to release the port.
             try? await Task.sleep(for: .milliseconds(250))
-            launchServer(launch, environment: launch.environment, name: server.title, port: server.primaryPort, pendingID: server.id)
+            launchServer(launch, environment: launch.environment, entry: RecentServer(server, launch: launch, reason: .stopped, log: nil),
+                         pendingID: server.id)
         }
     }
 
@@ -333,7 +366,7 @@ final class ServerStore {
         pending[recent.id] = .starting
         expectedSignatures[recent.id] = recent.launch.signature
         schedule()
-        launchServer(recent.launch, environment: recentEnvironments[recent.id], name: recent.title, port: recent.port, pendingID: recent.id)
+        launchServer(recent.launch, environment: recentEnvironments[recent.id], entry: recent, pendingID: recent.id)
     }
 
     func forget(_ recent: RecentServer) {
@@ -348,19 +381,21 @@ final class ServerStore {
         saveRecents()
     }
 
-    private func launchServer(_ spec: LaunchSpec, environment: [String]?, name: String, port: UInt16, pendingID: String) {
+    /// Starts `spec`. `entry` describes the server for the recent list, in case it fails before it comes up.
+    private func launchServer(_ spec: LaunchSpec, environment: [String]?, entry: RecentServer, pendingID: String) {
+        let name = entry.title
         Task {
             var env = environment
             if env == nil {
                 if shellEnvironment == nil { shellEnvironment = await ShellEnvironment.load() }
                 env = shellEnvironment
             }
-            let slug = name.lowercased().replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
-            let log = Self.logsDirectory.appendingPathComponent("\(slug)-\(port).log")
+            let log = Self.logURL(name: name, port: entry.port, directory: spec.directory)
             do {
                 let spawned = try ProcessControl.spawn(spec, environment: env ?? ShellEnvironment.fallback(), log: log) { pid, code in
                     Task { @MainActor in self.processExited(pid: pid, code: code) }
                 }
+                launches[spawned.pid] = (pendingID, entry, log)
                 stdinWriters[spawned.pid] = spawned.stdinWriter
                 if let started = LibProc.startDate(spawned.pid) {
                     managed["\(spawned.pid)-\(Int(started.timeIntervalSince1970))"] = ManagedProcess(pid: spawned.pid, started: started, log: log)
@@ -369,7 +404,8 @@ final class ServerStore {
                 scanNow()
                 // Clear the spinner if the server never binds its port, and say so.
                 try? await Task.sleep(for: .seconds(45))
-                if pending[pendingID] != nil {
+                // Still running but not listening. A launch that already exited has said why.
+                if pending[pendingID] != nil, launches[spawned.pid] != nil {
                     pending[pendingID] = nil
                     expectedSignatures[pendingID] = nil
                     show(Toast(message: "\(name) did not open a port. Check its log.", isError: true))
@@ -383,6 +419,14 @@ final class ServerStore {
         }
     }
 
+    /// One log per project folder and port, so two projects with the same name do not share a file.
+    private static func logURL(name: String, port: UInt16, directory: String) -> URL {
+        let slug = name.lowercased().replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
+        var hash: UInt32 = 2_166_136_261  // FNV-1a, stable across launches unlike `hashValue`.
+        for byte in directory.utf8 { hash = (hash ^ UInt32(byte)) &* 16_777_619 }
+        return logsDirectory.appendingPathComponent("\(slug)-\(port)-\(String(hash, radix: 16)).log")
+    }
+
     private func remember(_ server: Server, reason: StopReason) {
         guard let launch = server.launch else { return }
         let log = logURL(for: server)
@@ -390,13 +434,16 @@ final class ServerStore {
         if reason == .exited, let code = exitCodes.removeValue(forKey: server.rootPid), Self.isCrash(code) {
             reason = .crashed(code: code)
         }
-        let recent = RecentServer(title: server.title, frameworkName: server.framework.name, frameworkColor: server.framework.color,
-                                  port: server.primaryPort, branch: server.project?.branch, launch: launch, stoppedAt: Date(),
-                                  reason: reason, log: log)
+        let recent = RecentServer(server, launch: launch, reason: reason, log: log)
         if log != nil, reason == .exited {
             recentPids[server.rootPid] = recent.id
             if recentPids.count > 32 { recentPids.removeAll() }
         }
+        add(recent)
+    }
+
+    private func add(_ recent: RecentServer) {
+        let launch = recent.launch
         recents.removeAll { $0.id == recent.id }
         recents.insert(recent, at: 0)
         if recents.count > 8 { recents.removeLast(recents.count - 8) }
@@ -406,8 +453,18 @@ final class ServerStore {
 
     /// A server Vibe Kit started has ended. Mark it crashed if it failed, now or once the scan notices it is gone.
     private func processExited(pid: Int32, code: Int32) {
+        let launch = launches.removeValue(forKey: pid)
         let recentID = recentPids.removeValue(forKey: pid)
         guard Self.isCrash(code) else { return }
+        // It failed before its server came up, such as a syntax error on restart. Say so now, not after a timeout.
+        if let launch, let state = pending[launch.pendingID], state != .stopping {
+            pending[launch.pendingID] = nil
+            expectedSignatures[launch.pendingID] = nil
+            add(launch.entry.stopped(.crashed(code: code), log: launch.log))
+            show(Toast(message: "\(launch.entry.title) exited with code \(code). Check its log.", isError: true))
+            schedule()
+            return
+        }
         if let recentID, let index = recents.firstIndex(where: { $0.id == recentID }), recents[index].reason == .exited {
             recents[index].reason = .crashed(code: code)
             saveRecents()
