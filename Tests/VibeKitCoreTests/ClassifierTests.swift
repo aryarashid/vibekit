@@ -84,11 +84,14 @@ struct ClassifierTests {
         #expect(classifier.classify(facts("/Users/dev/code/api/target/debug/api", ["api"])) == .rust)
         #expect(classifier.classify(facts("/Users/dev/code/kit/.build/debug/Server", ["Server"])) == .swift)
         #expect(classifier.classify(facts("/Users/dev/code/kit/.build/x86_64-apple-macosx/debug/Server", ["Server"])) == .swift)
+        #expect(classifier.classify(facts("/Users/dev/code/WebApi/bin/Debug/net8.0/WebApi", ["WebApi"])) == .dotnet)
     }
 
     @Test func httpServerDirectoryFlag() {
         let f = facts("/usr/bin/python3", ["python3", "-m", "http.server", "--directory", "dist"], cwd: "/Users/dev/code/site")
         #expect(classifier.projectDirectory(f, framework: .pythonHTTP) == "/Users/dev/code/site/dist")
+        let sibling = facts("/usr/bin/python3", ["python3", "-m", "http.server", "-d", "../assets"], cwd: "/Users/dev/code/site")
+        #expect(classifier.projectDirectory(sibling, framework: .pythonHTTP) == "/Users/dev/code/assets")
     }
 
     @Test func homeIsNotAProjectDirectory() {

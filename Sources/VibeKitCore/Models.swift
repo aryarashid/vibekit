@@ -151,6 +151,10 @@ public struct Server: Identifiable, Hashable, Sendable {
         return processName == raw ? nil : processName
     }
 
+    /// The exact command to paste into a terminal. `command` is shortened for reading, such as `vite` for
+    /// `node node_modules/.bin/vite`, which may not be on PATH.
+    public var copyableCommand: String { launch?.displayCommand ?? command }
+
     /// How this Mac reaches the primary port: `localhost`, unless the server listens on one other address only.
     public var host: String {
         guard let binding = ports.first, !binding.isWildcard, !binding.isLocalhost else { return "localhost" }

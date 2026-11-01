@@ -278,7 +278,7 @@ struct ServerMenu: View {
         Button("Stop") { store.stop(server) }
         Button("Force Quit") { store.forceQuit(server) }
         Divider()
-        Button("Copy Command") { store.copy(server.command, label: "command") }
+        Button("Copy Command") { store.copy(server.copyableCommand, label: "command") }
         Button("Copy PID \(server.pid)") { store.copy("\(server.pid)") }
     }
 }

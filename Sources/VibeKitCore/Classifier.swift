@@ -76,6 +76,8 @@ public struct Classifier: Sendable {
         if exePath.contains("/target/debug/") || exePath.contains("/target/release/") { return .rust }
         if exePath.contains("/.build/debug/") || exePath.contains("/.build/release/")
             || exePath.contains("/.build/arm64-apple-macosx/") || exePath.contains("/.build/x86_64-apple-macosx/") { return .swift }
+        // `dotnet run` with an apphost runs the project's own binary from bin/<configuration>/net<version>/.
+        if exePath.contains("/bin/Debug/net") || exePath.contains("/bin/Release/net") { return .dotnet }
 
         return .tool
     }
@@ -90,7 +92,9 @@ public struct Classifier: Sendable {
     public func projectDirectory(_ facts: ProcessFacts, framework: Framework) -> String? {
         guard framework.category == .dev else { return nil }
         if framework == .pythonHTTP, let dir = value(after: ["--directory", "-d"], in: facts.argv) {
-            return dir.hasPrefix("/") ? dir : facts.cwd.map { ($0 as NSString).appendingPathComponent(dir) }
+            let path = dir.hasPrefix("/") ? dir : facts.cwd.map { ($0 as NSString).appendingPathComponent(dir) }
+            // `../assets` must not resolve to the repository the server was started from.
+            return path.map { URL(fileURLWithPath: $0).standardized.path }
         }
         guard let cwd = facts.cwd, cwd != "/", cwd != home else { return nil }
         return cwd

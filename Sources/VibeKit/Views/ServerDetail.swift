@@ -56,7 +56,7 @@ struct ServerDetail: View {
                 }
             }
             line("terminal", server.command, mono: true, lines: 3) {
-                IconButton(symbol: "doc.on.doc", help: "Copy command", size: 22) { store.copy(server.command, label: "command") }
+                IconButton(symbol: "doc.on.doc", help: "Copy command", size: 22) { store.copy(server.copyableCommand, label: "command") }
             }
             line("cpu", processSummary) { EmptyView() }
 
