@@ -221,6 +221,7 @@ struct PanelSwitch: ToggleStyle {
                     Circle()
                         .fill(.white)
                         .shadow(color: .black.opacity(0.22), radius: 0.8, y: 0.5)
+                        .frame(width: 13, height: 13)
                         .padding(2)
                 }
                 .contentShape(Capsule())
