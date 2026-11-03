@@ -216,9 +216,15 @@ final class ServerStore {
         for gone in previous where gone.category == .dev && !ids.contains(gone.id) && !restarting.contains(gone.id) {
             remember(gone, reason: pending[gone.id] == .stopping ? .stopped : .exited)
         }
+        // A stopped server is back when its command runs again, or when the same project holds its port again,
+        // for example after a restart from another folder or with other flags.
         let running = Set(sorted.compactMap { $0.launch?.signature })
-        if recents.contains(where: { running.contains($0.id) }) {
-            recents.removeAll { running.contains($0.id) }
+        let held = Set(sorted.flatMap { server in server.ports.map { "\(server.title)\u{0}\($0.port)" } })
+        func isBack(_ recent: RecentServer) -> Bool {
+            running.contains(recent.id) || held.contains("\(recent.title)\u{0}\(recent.port)")
+        }
+        if recents.contains(where: isBack) {
+            recents.removeAll(where: isBack)
             saveRecents()
         }
 

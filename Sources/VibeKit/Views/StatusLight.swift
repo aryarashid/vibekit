@@ -135,9 +135,9 @@ final class StatusLightView: NSView {
 
     private func color(for state: LightState) -> NSColor {
         switch state {
-        case .up, .busy: Theme.mintNS
-        case .waiting, .silent: Theme.amberNS
-        case .failing, .crashed: Theme.redNS
+        case .up, .busy: Theme.mintLightNS
+        case .waiting, .silent: Theme.amberLightNS
+        case .failing, .crashed: Theme.redLightNS
         case .neutral, .stopped: NSColor.secondaryLabelColor
         }
     }

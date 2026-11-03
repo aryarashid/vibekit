@@ -90,7 +90,7 @@ enum DemoData {
                    uses: 9, lastUsed: ago(50), created: ago(400)),
             Prompt(title: "Tighten the copy", text: "Rewrite this UI copy so it is shorter and plainer. Keep every fact. No exclamation marks.",
                    uses: 4, lastUsed: ago(120), created: ago(300)),
-            Prompt(title: "Add a regression test", text: "Add one focused test that fails without this fix and passes with it.", created: ago(1)),
+            Prompt(text: "Add one focused test that fails without this fix and passes with it.", created: ago(1)),
         ])
     }
 

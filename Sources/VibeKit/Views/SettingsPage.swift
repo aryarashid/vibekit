@@ -64,7 +64,7 @@ struct SettingsPage: View {
                         picker("Terminal", selection: $settings.terminalID, apps: ExternalApp.terminals)
                     }
                     group("Keyboard") {
-                        shortcut("↑ ↓", "Move between servers")
+                        shortcut("↑  ↓", "Move between servers")
                         shortcut("↩", "Open in browser, or start a stopped server")
                         shortcut("→", "Show details")
                         shortcut("⌘1–⌘9", "Open server 1 to 9 in the list")
@@ -78,7 +78,10 @@ struct SettingsPage: View {
                         shortcut("⌘P", "Pin or unpin a prompt")
                     }
                     HStack(spacing: 10) {
-                        VibeMark(live: true, size: 22)
+                        Image(nsImage: NSApp.applicationIconImage)
+                            .resizable()
+                            .frame(width: 30, height: 30)
+                            .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 1) {
                             Text("Vibe Kit \(version)").font(.system(size: 12, weight: .semibold))
                             Text("Open source under the MIT license.").font(Theme.metaFont).foregroundStyle(.secondary)
@@ -123,8 +126,7 @@ struct SettingsPage: View {
             Spacer(minLength: 8)
             Toggle(title, isOn: isOn)
                 .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.mini)
+                .toggleStyle(PanelSwitch())
         }
         .padding(.horizontal, 16)
         .frame(height: 28)
@@ -151,13 +153,17 @@ struct SettingsPage: View {
         .frame(height: 30)
     }
 
+    /// `keys` holds one or more key combinations, two spaces apart. Each one is drawn as a key cap.
     private func shortcut(_ keys: String, _ description: String) -> some View {
-        HStack {
+        HStack(spacing: 4) {
             Text(description).font(.system(size: 12)).foregroundStyle(.secondary)
-            Spacer()
-            Text(keys).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            ForEach(Array(keys.components(separatedBy: "  ").enumerated()), id: \.offset) { _, key in
+                KeyCap(key)
+            }
         }
         .padding(.horizontal, 16)
-        .frame(height: 22)
+        .frame(height: 24)
+        .accessibilityElement(children: .combine)
     }
 }

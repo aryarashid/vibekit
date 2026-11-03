@@ -14,6 +14,16 @@ struct PromptTests {
         #expect(Prompt(title: "Named", text: "Body\ntext").preview == "Body text")
     }
 
+    @Test func longFirstLineIsCutAtAWordAndNotRepeatedMidWord() {
+        let line = Array(repeating: "audit", count: 30).joined(separator: " ") // 179 characters
+        let prompt = Prompt(text: line + "\nNext line.")
+        #expect(prompt.displayTitle.hasSuffix("audit…"))
+        #expect(prompt.displayTitle.count <= 121)
+        // The preview starts after the whole first line, not part way through a word of it.
+        #expect(prompt.preview == "Next line.")
+        #expect(Prompt(text: line).preview == "")
+    }
+
     @Test func pinnedFirstThenOftenAndRecentlyUsed() {
         let day: TimeInterval = 86_400
         let stale = Prompt(title: "stale", text: "a", uses: 50, lastUsed: now.addingTimeInterval(-60 * day))
