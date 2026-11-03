@@ -39,13 +39,14 @@ enum Snapshot {
                                  onUsePrompt: { _ in }, close: {}, initial: initial)
         let background = args.contains("--transparent") ? Color.clear : Color(nsColor: .windowBackgroundColor)
         let hosting = NSHostingView(rootView: root.background(background))
-        let window = NSWindow(contentRect: NSRect(x: -4000, y: 0, width: PanelMetrics.width, height: height),
+        let window = SnapshotWindow(contentRect: NSRect(x: -4000, y: 0, width: PanelMetrics.width, height: height),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.backgroundColor = .clear
         window.isOpaque = false
         window.appearance = NSAppearance(named: args.contains("--dark") ? .darkAqua : .aqua)
         window.contentView = hosting
-        window.orderFrontRegardless()
+        // Key, like the real panel, so controls draw the way they look when it is open.
+        window.makeKeyAndOrderFront(nil)
         pump(seconds: 0.6)
         window.setContentSize(NSSize(width: PanelMetrics.width, height: height))
         pump(seconds: 0.6)
@@ -65,4 +66,9 @@ enum Snapshot {
         let until = Date().addingTimeInterval(seconds)
         while Date() < until { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05)) }
     }
+}
+
+/// The real panel becomes key without activating the app. Matching that makes switches and pickers draw the same.
+private final class SnapshotWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
 }

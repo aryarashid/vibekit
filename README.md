@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icon.svg" width="96" height="96" alt="Vibe Kit icon">
+  <img src="assets/icon.png" width="96" height="96" alt="Vibe Kit icon: a glowing trace that dips into a V and ends in a green live dot">
 </p>
 
 <h1 align="center">Vibe Kit</h1>
@@ -186,7 +186,7 @@ swift build                    # debug build
 swift test                     # classifier, parser, project, exit code and prompt tests
 swift run VibeKit              # run from the terminal
 ./scripts/screenshots.sh       # render the README images from demo data
-swift scripts/make-icon.swift build   # redraw the app icon
+swift scripts/make-icon.swift build   # redraw the app icon (copy build/icon-512.png to assets/icon.png)
 ```
 
 `VibeKitCore` holds the scanner, classifier and process control, with no UI. `VibeKit` is the AppKit and SwiftUI app. The design brief is in [`docs/design/BRIEF.md`](docs/design/BRIEF.md).

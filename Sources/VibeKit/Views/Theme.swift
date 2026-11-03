@@ -9,6 +9,10 @@ enum Theme {
     static let redNS = dynamic(dark: 0xFF5C7A, light: 0xDC2626)
     static let violetNS = dynamic(dark: 0xA78BFA, light: 0x7C3AED)
     static let cyanNS = dynamic(dark: 0x22D3EE, light: 0x0E7490)
+    // Status lights are shapes, not text, so they keep more of their color.
+    static let mintLightNS = dynamic(dark: 0x34D399, light: 0x059669, needed: Contrast.graphics)
+    static let amberLightNS = dynamic(dark: 0xFBBF24, light: 0xD97706, needed: Contrast.graphics)
+    static let redLightNS = dynamic(dark: 0xFF5C7A, light: 0xDC2626, needed: Contrast.graphics)
 
     /// Up and healthy.
     static let live = Color(nsColor: mintNS)
@@ -38,9 +42,12 @@ enum Theme {
         return nil
     }
 
-    static func dynamic(dark: UInt32, light: UInt32) -> NSColor {
-        NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? srgb(dark) : srgb(light)
+    /// A color for each appearance, each nudged until it reads as text (or, with `needed`, as a shape) on the panel's glass.
+    static func dynamic(dark: UInt32, light: UInt32, needed: Double = Contrast.minimum) -> NSColor {
+        let dark = srgb(Contrast.readable(dark, dark: true, needed: needed))
+        let light = srgb(Contrast.readable(light, dark: false, needed: needed))
+        return NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
         }
     }
 
@@ -49,21 +56,20 @@ enum Theme {
                 blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
     }
 
-    /// Brand colors, darkened in light mode when they are too pale to read on a light background.
-    static func tint(_ hex: UInt32?) -> Color {
+    /// Brand colors, darker in light mode and lighter in dark mode only when they would be hard to read.
+    @MainActor static func tint(_ hex: UInt32?) -> Color {
         guard let hex else { return .primary }
-        let base = srgb(hex)
-        return Color(nsColor: NSColor(name: nil) { appearance in
-            let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            if dark { return base }
-            let luminance = 0.2126 * base.redComponent + 0.7152 * base.greenComponent + 0.0722 * base.blueComponent
-            return luminance > 0.55 ? base.blended(withFraction: 0.38, of: .black) ?? base : base
-        })
+        if let cached = tints[hex] { return cached }
+        let color = Color(nsColor: dynamic(dark: hex, light: hex))
+        tints[hex] = color
+        return color
     }
+
+    @MainActor private static var tints: [UInt32: Color] = [:]
 }
 
 extension Framework {
-    var tint: Color { Theme.tint(color) }
+    @MainActor var tint: Color { Theme.tint(color) }
 }
 
 enum Format {

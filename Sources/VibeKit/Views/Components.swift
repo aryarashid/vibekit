@@ -204,3 +204,47 @@ struct BrandMark: View {
             }
     }
 }
+
+/// A switch drawn in the system accent color. The system switch turns gray whenever Vibe Kit is not the active
+/// app, which is always: the panel takes the keyboard without activating Vibe Kit. Gray made on and off hard to tell apart.
+struct PanelSwitch: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        let on = configuration.isOn
+        Button {
+            withAnimation(.snappy(duration: 0.18)) { configuration.isOn.toggle() }
+        } label: {
+            Capsule()
+                .fill(on ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(Color.primary.opacity(0.14)))
+                .overlay(Capsule().strokeBorder(Color.primary.opacity(on ? 0 : 0.06), lineWidth: 0.5))
+                .frame(width: 30, height: 17)
+                .overlay(alignment: on ? .trailing : .leading) {
+                    Circle()
+                        .fill(.white)
+                        .shadow(color: .black.opacity(0.22), radius: 0.8, y: 0.5)
+                        .frame(width: 13, height: 13)
+                        .padding(2)
+                }
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityRepresentation {
+            Toggle(isOn: configuration.$isOn) { configuration.label }
+        }
+    }
+}
+
+/// One key combination, like ⌘R, drawn as a small key cap.
+struct KeyCap: View {
+    let keys: String
+    init(_ keys: String) { self.keys = keys }
+
+    var body: some View {
+        Text(keys)
+            .font(.system(size: 10.5, weight: .medium, design: .rounded))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 5)
+            .frame(minWidth: 20, minHeight: 18)
+            .background(RoundedRectangle(cornerRadius: 4.5, style: .continuous).fill(Color.primary.opacity(0.06)))
+            .overlay(RoundedRectangle(cornerRadius: 4.5, style: .continuous).strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
+    }
+}

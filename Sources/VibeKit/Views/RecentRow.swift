@@ -33,7 +33,7 @@ struct RecentRow: View {
                     .lineLimit(1)
                 HStack(spacing: 4) {
                     Text(recent.frameworkName)
-                        .foregroundStyle(Theme.tint(recent.frameworkColor).opacity(0.8))
+                        .foregroundStyle(Theme.tint(recent.frameworkColor))
                         .fontWeight(.medium)
                     Text("·").foregroundStyle(.tertiary)
                     Text(recent.launch.displayCommandShort)

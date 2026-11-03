@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="${VERSION:-1.1.1}"
+VERSION="${VERSION:-1.2.0}"
 BUILD="${BUILD:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
 APP="build/Vibe Kit.app"
 
@@ -15,7 +15,8 @@ else
   BIN_DIR="$(swift build -c release --show-bin-path)"
 fi
 
-[[ -f build/AppIcon.icns ]] || swift scripts/make-icon.swift build
+# Redraw the icon when the drawing script is newer than the last one drawn.
+[[ build/AppIcon.icns -nt scripts/make-icon.swift ]] || swift scripts/make-icon.swift build
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

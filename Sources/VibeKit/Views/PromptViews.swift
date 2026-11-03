@@ -333,15 +333,20 @@ struct PromptRow: View {
         HStack(spacing: 10) {
             gauge
             VStack(alignment: .leading, spacing: 2) {
+                // A one-line prompt has nothing to preview, so its title may take both lines.
+                let preview = prompt.preview
                 Text(prompt.displayTitle)
                     .font(Theme.titleFont)
-                    .lineLimit(1)
+                    .lineLimit(preview.isEmpty ? 2 : 1)
                     .truncationMode(.tail)
-                Text(prompt.preview.isEmpty ? " " : prompt.preview)
-                    .font(Theme.metaFont)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !preview.isEmpty {
+                    Text(preview)
+                        .font(Theme.metaFont)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
             Spacer(minLength: 4)
             trailing

@@ -22,25 +22,32 @@ public struct Prompt: Codable, Identifiable, Equatable, Sendable {
         self.created = created
     }
 
-    /// The title, or the first non-empty line of the text.
+    /// The title, or the first non-empty line of the text, cut at a word near 120 characters.
     public var displayTitle: String {
         let explicit = title.trimmingCharacters(in: .whitespacesAndNewlines)
         if !explicit.isEmpty { return explicit }
-        let line = text.split(whereSeparator: \.isNewline).lazy
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .first { !$0.isEmpty } ?? ""
-        return line.isEmpty ? "Untitled" : String(line.prefix(80))
+        let line = firstLine
+        guard !line.isEmpty else { return "Untitled" }
+        guard line.count > 120 else { return line }
+        let cut = line.prefix(120)
+        let word = cut.lastIndex(where: \.isWhitespace).map { cut[..<$0] } ?? cut
+        return word.trimmingCharacters(in: .whitespaces) + "…"
     }
 
-    /// The text with runs of whitespace folded to single spaces, for a one or two line preview.
+    /// The text with runs of whitespace folded to single spaces, for a one line preview.
+    /// Without a title the first line is the title, so the preview is what comes after that whole line.
     public var preview: String {
-        var body = text
-        // Without a title the first line is already the title, so the preview starts after it.
-        if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           let range = text.range(of: displayTitle) {
-            body = String(text[range.upperBound...])
+        var body = Substring(text)
+        if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let range = text.range(of: firstLine) {
+            body = text[range.upperBound...]
         }
         return body.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    private var firstLine: String {
+        text.split(whereSeparator: \.isNewline).lazy
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty } ?? ""
     }
 
     /// Ranks often and recently used prompts first. Each use counts fully for a day, then fades by half every week.
