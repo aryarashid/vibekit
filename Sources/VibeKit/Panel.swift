@@ -51,6 +51,8 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var deferredHeight: CGFloat?
     /// Counts opens, so work scheduled for one open can tell when the panel has opened again since.
     private var opens = 0
+    /// Runs while an auto-hiding menu bar is showing under the pointer, to give the panel its focus back after.
+    private var menuBarWatch: Timer?
 
     var isVisible: Bool { panel.isVisible && !closing && !prewarming }
     var onVisibilityChange: ((Bool) -> Void)?
@@ -96,6 +98,9 @@ final class PanelController: NSObject, NSWindowDelegate {
         hosting.sizingOptions = []
         hostingView = hosting
         panel.contentView = makeBackground(containing: hosting)
+        // Lay out once before showing. SwiftUI reports the page's height during this pass, so the panel appears
+        // at its final size instead of at the last page's size and then jumping.
+        hosting.layoutSubtreeIfNeeded()
 
         store.isPanelOpen = true
         position(height: contentHeight)
@@ -166,6 +171,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     func close(then completion: (@MainActor @Sendable () -> Void)? = nil) {
         guard isVisible else { return }
         closing = true
+        stopMenuBarWatch()
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
         NSAnimationContext.runAnimationGroup({ context in
@@ -186,7 +192,46 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        close()
+        guard isVisible else { return }
+        // An auto-hiding menu bar takes the keyboard while it slides in under the pointer. That is not you leaving:
+        // stay open, so a click on the icon closes the panel instead of reopening it. Clicks elsewhere still close it.
+        if Self.pointerIsInMenuBar() && NSEvent.pressedMouseButtons == 0 {
+            watchMenuBar(front: NSWorkspace.shared.frontmostApplication)
+        } else {
+            close()
+        }
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        syncContentFrame()
+    }
+
+    private static func pointerIsInMenuBar() -> Bool {
+        let pointer = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) else { return false }
+        return pointer.y >= screen.frame.maxY - Placement.menuBarHeight(on: screen) - 4
+    }
+
+    /// Once the pointer leaves the menu bar, the panel takes the keyboard back, unless you switched apps meanwhile.
+    private func watchMenuBar(front: NSRunningApplication?) {
+        stopMenuBarWatch()
+        menuBarWatch = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !Self.pointerIsInMenuBar() else { return }
+                self.stopMenuBarWatch()
+                guard self.isVisible, !self.panel.isKeyWindow else { return }
+                if NSWorkspace.shared.frontmostApplication == front {
+                    self.panel.makeKey()
+                } else {
+                    self.close()
+                }
+            }
+        }
+    }
+
+    private func stopMenuBarWatch() {
+        menuBarWatch?.invalidate()
+        menuBarWatch = nil
     }
 
     /// The panel's glass with the SwiftUI content inside. Frames, not Auto Layout: the glass does not resize its
