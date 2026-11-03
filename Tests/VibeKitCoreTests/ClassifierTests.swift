@@ -255,6 +255,22 @@ struct AddressTests {
                project: nil, processName: "vite", executable: "/bin/node", command: "vite", directory: nil, launch: nil)
     }
 
+    @Test func holdsAPortOnlyForTheSameProjectFolder() {
+        func server(root: String, subpath: String?, port: UInt16) -> Server {
+            Server(id: "s", pid: 1, rootPid: 1, listenerPids: [1], startDate: Date(),
+                   ports: [PortBinding(port: port, address: "::1", isIPv6: true)], framework: .vite,
+                   project: Project(name: "web", root: root, subpath: subpath, branch: nil, worktree: nil),
+                   processName: "vite", executable: "/bin/node", command: "vite", directory: nil, launch: nil)
+        }
+        let a = server(root: "/clients/a/web", subpath: nil, port: 3000)
+        #expect(a.holds(port: 3000, inFolder: "/clients/a/web"))
+        // Same name, other checkout: not the same server coming back.
+        #expect(!server(root: "/clients/b/web", subpath: nil, port: 3000).holds(port: 3000, inFolder: "/clients/a/web"))
+        #expect(!a.holds(port: 3001, inFolder: "/clients/a/web"))
+        #expect(server(root: "/repo", subpath: "apps/web", port: 3000).holds(port: 3000, inFolder: "/repo/apps/web"))
+        #expect(!server(root: "/repo", subpath: "apps/api", port: 3000).holds(port: 3000, inFolder: "/repo/apps/web"))
+    }
+
     @Test func loopbackAndWildcardUseLocalhost() {
         #expect(server([PortBinding(port: 5173, address: "::1", isIPv6: true)]).localURL?.absoluteString == "http://localhost:5173")
         #expect(server([PortBinding(port: 5173, address: "0.0.0.0", isIPv6: false)]).localURL?.absoluteString == "http://localhost:5173")

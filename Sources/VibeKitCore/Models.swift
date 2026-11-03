@@ -46,6 +46,9 @@ public struct Project: Hashable, Sendable {
     /// Linked worktree folder name, when the server runs from one.
     public let worktree: String?
 
+    /// The folder the server runs from: the root plus the subpath. Two checkouts with the same name differ here.
+    public var folder: String { subpath.map { (root as NSString).appendingPathComponent($0) } ?? root }
+
     public init(name: String, root: String, subpath: String?, branch: String?, worktree: String?) {
         self.name = name
         self.root = root
@@ -128,6 +131,11 @@ public struct Server: Identifiable, Hashable, Sendable {
     }
 
     public var category: ServerCategory { framework.category }
+
+    /// Whether this server runs from the project folder `folder` and listens on `port`.
+    public func holds(port: UInt16, inFolder folder: String) -> Bool {
+        project?.folder == folder && ports.contains { $0.port == port }
+    }
 
     /// The port people mean when they talk about this server.
     public var primaryPort: UInt16 { ports.first?.port ?? 0 }

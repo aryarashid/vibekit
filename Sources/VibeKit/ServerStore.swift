@@ -16,9 +16,11 @@ struct RecentServer: Codable, Identifiable, Hashable {
     var reason: StopReason?
     /// Log file, for servers Vibe Kit started.
     var log: URL?
+    /// The project folder it ran from. Missing in lists saved by older versions.
+    var projectFolder: String?
 
     init(title: String, frameworkName: String, frameworkColor: UInt32?, port: UInt16, branch: String?, launch: LaunchSpec,
-         stoppedAt: Date, reason: StopReason? = nil, log: URL? = nil) {
+         stoppedAt: Date, reason: StopReason? = nil, log: URL? = nil, projectFolder: String? = nil) {
         self.title = title
         self.frameworkName = frameworkName
         self.frameworkColor = frameworkColor
@@ -28,17 +30,19 @@ struct RecentServer: Codable, Identifiable, Hashable {
         self.stoppedAt = stoppedAt
         self.reason = reason
         self.log = log
+        self.projectFolder = projectFolder
     }
 
     init(_ server: Server, launch: LaunchSpec, reason: StopReason, log: URL?) {
         self.init(title: server.title, frameworkName: server.framework.name, frameworkColor: server.framework.color,
-                  port: server.primaryPort, branch: server.project?.branch, launch: launch, stoppedAt: Date(), reason: reason, log: log)
+                  port: server.primaryPort, branch: server.project?.branch, launch: launch, stoppedAt: Date(), reason: reason, log: log,
+                  projectFolder: server.project?.folder)
     }
 
     /// The same server, stopped just now.
     func stopped(_ reason: StopReason, log: URL?) -> RecentServer {
         RecentServer(title: title, frameworkName: frameworkName, frameworkColor: frameworkColor, port: port, branch: branch,
-                     launch: launch, stoppedAt: Date(), reason: reason, log: log)
+                     launch: launch, stoppedAt: Date(), reason: reason, log: log, projectFolder: projectFolder)
     }
 }
 
@@ -216,12 +220,13 @@ final class ServerStore {
         for gone in previous where gone.category == .dev && !ids.contains(gone.id) && !restarting.contains(gone.id) {
             remember(gone, reason: pending[gone.id] == .stopping ? .stopped : .exited)
         }
-        // A stopped server is back when its command runs again, or when the same project holds its port again,
-        // for example after a restart from another folder or with other flags.
+        // A stopped server is back when its command runs again, or when the same project folder holds its port
+        // again, for example after a restart with other flags or from another working directory.
         let running = Set(sorted.compactMap { $0.launch?.signature })
-        let held = Set(sorted.flatMap { server in server.ports.map { "\(server.title)\u{0}\($0.port)" } })
         func isBack(_ recent: RecentServer) -> Bool {
-            running.contains(recent.id) || held.contains("\(recent.title)\u{0}\(recent.port)")
+            if running.contains(recent.id) { return true }
+            guard let folder = recent.projectFolder else { return false }
+            return sorted.contains { $0.holds(port: recent.port, inFolder: folder) }
         }
         if recents.contains(where: isBack) {
             recents.removeAll(where: isBack)
