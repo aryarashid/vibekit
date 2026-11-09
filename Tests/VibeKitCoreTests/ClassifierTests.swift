@@ -70,6 +70,13 @@ struct ClassifierTests {
         #expect(classifier.displayName(f) == "Cursor")
     }
 
+    @Test func xcodePythonIsNamedPython() {
+        let f = facts("/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python",
+                      ["/usr/bin/python3", "server.py"])
+        #expect(classifier.displayName(f) == "Python")
+        #expect(classifier.displayName(facts("/Applications/Slack.app/Contents/Frameworks/Slack Helper.app/Contents/MacOS/Slack Helper", [])) == "Slack")
+    }
+
     @Test func pythonFrameworkIsNotAnApp() {
         let exe = "/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
         let f = facts(exe, [exe, "-m", "uvicorn", "main:app"])

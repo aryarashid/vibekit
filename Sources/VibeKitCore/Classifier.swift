@@ -125,8 +125,9 @@ public struct Classifier: Sendable {
             let bundle = facts.executable[..<range.lowerBound]
             if let slash = bundle.lastIndex(of: "/") {
                 let name = String(bundle[bundle.index(after: slash)...])
-                // Prefer the outermost app for helpers nested inside another app.
-                if let outer = facts.executable.range(of: ".app/"), outer.lowerBound != range.lowerBound {
+                // Prefer the outermost app for helpers nested inside another app, but not for a language runtime
+                // that ships inside a framework, such as the Python inside Xcode: that is Python, not Xcode.
+                if !bundle.contains(".framework/"), let outer = facts.executable.range(of: ".app/"), outer.lowerBound != range.lowerBound {
                     let outerBundle = facts.executable[..<outer.lowerBound]
                     if let s = outerBundle.lastIndex(of: "/") { return String(outerBundle[outerBundle.index(after: s)...]) }
                 }
