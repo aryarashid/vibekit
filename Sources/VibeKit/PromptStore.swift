@@ -35,7 +35,7 @@ final class PromptStore {
     /// Every change calls it first, so a change never writes over an edit made elsewhere.
     func reloadIfChanged() {
         guard persists else { return }
-        let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        let modified = modificationDate()
         // A file that failed to read is tried again every time: fixing its permissions does not change its date.
         guard unreadable || modified == nil || modified != loadedAt else { return }
         loadedAt = modified
@@ -119,11 +119,17 @@ final class PromptStore {
         guard persists, !unreadable else { return }
         do {
             try PromptLibrary.save(prompts, to: file)
-            loadedAt = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            loadedAt = modificationDate()
             problem = nil
         } catch {
             problem = "Could not save prompts: \(error.localizedDescription)"
         }
+    }
+
+    /// Read fresh every time. `URL.resourceValues` caches on the URL, which hid edits made outside Vibe Kit
+    /// and then let the next save write over them.
+    private func modificationDate() -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: file.resolvingSymlinksInPath().path))?[.modificationDate] as? Date
     }
 
     /// Sample prompts for `--snapshot --demo`. Nothing is saved.

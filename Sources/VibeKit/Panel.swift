@@ -83,7 +83,11 @@ final class PanelController: NSObject, NSWindowDelegate {
             panel.orderOut(nil)
         }
         let wasVisible = isVisible
-        if !wasVisible { placement = Placement(button: button) }
+        if !wasVisible {
+            // No display at all, such as a closed laptop with nothing attached: there is nowhere to show it.
+            guard let fresh = Placement(button: button) else { return }
+            placement = fresh
+        }
         opens += 1
         deferredHeight = nil
         var initial = PanelRootView.InitialState()
@@ -123,9 +127,8 @@ final class PanelController: NSObject, NSWindowDelegate {
                       initial: initial)
     }
 
-    /// Copies the prompt, closes, and pastes it into the app in front when that is on and allowed.
+    /// Closes, and pastes the prompt the list just copied into the app in front when that is on and allowed.
     private func use(_ prompt: Prompt) {
-        prompts.copy(prompt)
         guard store.settings.pasteOnUse && PromptStore.canPaste else { return close() }
         close { [weak self] in
             guard let self else { return }
@@ -265,9 +268,12 @@ final class PanelController: NSObject, NSWindowDelegate {
     private func screensChanged() {
         guard isVisible, let old = placement else { return }
         // Keep the spot the panel opened at, but move it if that display is gone or its menu bar grew.
-        let fresh = Placement(button: nil, on: NSScreen.screens.contains(old.screen) ? old.screen : nil)
-        placement = Placement(screen: fresh.screen, midX: fresh.screen == old.screen ? old.midX : fresh.midX,
-                              top: min(fresh.screen == old.screen ? old.top : fresh.top, fresh.safeTop))
+        // AppKit can hand out new screen objects after a change, so displays are matched by their ID.
+        let same = NSScreen.screens.first { $0.displayID == old.screen.displayID }
+        guard let fresh = Placement(button: nil, on: same) else { return close() }
+        let kept = same != nil
+        placement = Placement(screen: fresh.screen, midX: kept ? old.midX : fresh.midX,
+                              top: min(kept ? old.top : fresh.top, fresh.safeTop))
         position(height: preferredHeight)
     }
 
@@ -328,10 +334,11 @@ struct Placement {
         max(NSStatusBar.system.thickness, screen.frame.maxY - screen.visibleFrame.maxY, screen.safeAreaInsets.top)
     }
 
-    init(button: NSStatusBarButton?, on fixedScreen: NSScreen? = nil) {
+    init?(button: NSStatusBarButton?, on fixedScreen: NSScreen? = nil) {
         let screens = NSScreen.screens
         let pointer = NSEvent.mouseLocation
-        let pointerScreen = screens.first { NSMouseInRect(pointer, $0.frame, false) } ?? NSScreen.main ?? screens[0]
+        guard let pointerScreen = screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) ?? NSScreen.main ?? screens.first
+        else { return nil }
 
         var iconFrame: NSRect?
         if let button, let window = button.window, window.isVisible {
@@ -361,6 +368,10 @@ struct Placement {
         guard let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea else { return false }
         return icon.midX > left.maxX && icon.midX < right.minX
     }
+}
+
+extension NSScreen {
+    var displayID: UInt32? { (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value }
 }
 
 /// Geometry shared by initial presentation, live resizing and display changes.

@@ -170,19 +170,22 @@ public struct Server: Identifiable, Hashable, Sendable {
         return binding.isIPv6 ? "[\(address)]" : address
     }
 
-    public var localURL: URL? {
+    public var localURL: URL? { localURL(secure: false) }
+
+    /// `secure` when the server answered over HTTPS only, such as Vite with a local certificate.
+    public func localURL(secure: Bool) -> URL? {
         if let scheme = framework.urlScheme {
             return URL(string: "\(scheme)://\(host):\(primaryPort)")
         }
         guard framework.speaksHTTP else { return nil }
-        return URL(string: "http://\(host):\(primaryPort)")
+        return URL(string: "\(secure ? "https" : "http")://\(host):\(primaryPort)")
     }
 
     /// The URL for another device: the primary port if it is open to the network, else the first port that is.
     /// `host` is an IPv4 address, so an IPv6-only listener gets none.
-    public func networkURL(host: String?) -> URL? {
+    public func networkURL(host: String?, secure: Bool = false) -> URL? {
         guard framework.speaksHTTP, let host, let exposed = ports.first(where: { $0.isWildcard && $0.acceptsIPv4 }) else { return nil }
-        return URL(string: "http://\(host):\(exposed.port)")
+        return URL(string: "\(secure ? "https" : "http")://\(host):\(exposed.port)")
     }
 }
 

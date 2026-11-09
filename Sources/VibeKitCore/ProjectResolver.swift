@@ -33,6 +33,12 @@ public enum ProjectResolver {
             if let range = target.range(of: "/.git/worktrees/") {
                 name = ((String(target[..<range.lowerBound])) as NSString).lastPathComponent
                 worktree = (root as NSString).lastPathComponent
+            } else if let range = target.range(of: "/worktrees/", options: .backwards),
+                      FileManager.default.fileExists(atPath: (target as NSString).appendingPathComponent("commondir")) {
+                // A worktree of a bare repository, such as `myrepo.git/worktrees/feature`.
+                let common = (String(target[..<range.lowerBound]) as NSString).lastPathComponent
+                name = common.hasSuffix(".git") ? String(common.dropLast(4)) : common
+                worktree = (root as NSString).lastPathComponent
             }
         }
 

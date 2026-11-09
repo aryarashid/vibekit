@@ -52,7 +52,22 @@ struct ServerRow: View {
         .contextMenu { ServerMenu(server: server, store: store, onShowLogs: onShowLogs) }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(server.title), \(server.framework.name), port \(server.primaryPort)")
+        .accessibilityValue(accessibilityState)
         .accessibilityAction(named: "Open") { primaryAction() }
+        .accessibilityAction(named: "Copy URL") { store.copyURL(server) }
+        .accessibilityAction(named: "Restart") { store.restart(server) }
+        .accessibilityAction(named: "Stop") { store.stop(server) }
+        .accessibilityAction(named: isExpanded ? "Hide details" : "Show details") { onToggleDetails() }
+    }
+
+    /// What the light and tags say, for VoiceOver.
+    private var accessibilityState: String {
+        if let pending { return pending == .restarting ? "Restarting" : pending == .starting ? "Starting" : "Stopping" }
+        var parts = [lightHelp.isEmpty ? "Running" : lightHelp]
+        if server.project?.worktree != nil { parts.append("worktree") }
+        if server.ports.contains(where: { store.sharedPorts.contains($0.port) }) { parts.append("shared port") }
+        if server.isExposed && server.category == .dev { parts.append("on the local network") }
+        return parts.joined(separator: ", ")
     }
 
     // MARK: Parts
@@ -252,10 +267,10 @@ struct ServerMenu: View {
         if server.category == .dev && server.framework.speaksHTTP {
             Button("Open in Browser") { store.open(server) }
         }
-        if let url = server.localURL {
+        if let url = store.url(for: server) {
             Button(server.framework.urlScheme == nil ? "Copy URL" : "Copy Connection URL") { store.copy(url.absoluteString) }
         }
-        if let network = server.networkURL(host: store.lanAddress) {
+        if let network = store.networkURL(for: server) {
             Button("Copy Network URL") { store.copy(network.absoluteString) }
         }
         Divider()

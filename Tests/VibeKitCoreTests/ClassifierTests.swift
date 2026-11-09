@@ -396,3 +396,17 @@ struct ProcessControlTests {
         #expect(try String(contentsOf: log, encoding: .utf8) == "boom\n")
     }
 }
+
+@Suite("Python launch units")
+struct PythonLaunchUnitTests {
+    @Test func reloadersOwnTheirServer() {
+        let django = ["python", "manage.py", "runserver"]
+        #expect(PortScanner.isPythonReloader(parent: django, child: django))
+        #expect(PortScanner.isPythonReloader(parent: ["python", "/venv/bin/uvicorn", "app:app", "--reload"],
+                                             child: ["python", "-c", "from multiprocessing.spawn import spawn_main", "--multiprocessing-fork"]))
+    }
+
+    @Test func aSupervisorScriptIsNotPartOfTheServer() {
+        #expect(!PortScanner.isPythonReloader(parent: ["python", "supervisor.py"], child: ["python", "-m", "http.server", "8000"]))
+    }
+}

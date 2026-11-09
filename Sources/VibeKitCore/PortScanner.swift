@@ -32,6 +32,15 @@ public final class PortScanner: @unchecked Sendable {
     /// Older processes are only rechecked on a periodic full sweep, which is what keeps idle scans cheap.
     private static let sweepInterval: UInt64 = 30 * NSEC_PER_SEC
 
+    /// When a process already running at the first scan counts as first seen: its real start if that was within
+    /// the young window, else long ago.
+    private static func launchAge(_ pid: pid_t, now: UInt64) -> UInt64 {
+        guard let start = LibProc.startDate(pid) else { return 0 }
+        let age = Date().timeIntervalSince(start)
+        guard age >= 0, age < Double(youngWindow) / Double(NSEC_PER_SEC) else { return 0 }
+        return now &- UInt64(age * Double(NSEC_PER_SEC))
+    }
+
     /// One pass over the process table.
     /// - Parameters:
     ///   - usageFor: categories whose process trees get CPU and memory totals.
@@ -51,8 +60,10 @@ public final class PortScanner: @unchecked Sendable {
                 entry = old
             } else if let info = LibProc.shortInfo(pid) {
                 if known[pid] == nil { stats.newPids += 1 }
-                // Everything already running at launch counts as old, so the first two minutes stay cheap.
-                entry = Known(info: info, firstSeen: known[pid]?.firstSeen ?? (firstScan ? 0 : now), ports: known[pid]?.ports ?? [])
+                // Everything already running at launch counts as old, so the first two minutes stay cheap, except
+                // processes started just before, such as a server still compiling when Vibe Kit opens at login.
+                let firstSeen = known[pid]?.firstSeen ?? (firstScan ? Self.launchAge(pid, now: now) : now)
+                entry = Known(info: info, firstSeen: firstSeen, ports: known[pid]?.ports ?? [])
             } else {
                 continue
             }
@@ -291,10 +302,23 @@ public final class PortScanner: @unchecked Sendable {
             return false
         }
         // Python autoreloaders (Django, Flask, uvicorn --reload) run the server as a python child.
+        // Any other Python parent, such as a supervisor script, is its own program: stopping the server must not stop it.
         if isPython(p) {
-            return isPython(child) && !Classifier.runsInlinePython(p.facts.argv)
+            guard isPython(child), !Classifier.runsInlinePython(p.facts.argv) else { return false }
+            return Self.isPythonReloader(parent: p.facts.argv, child: child.facts.argv)
         }
         return false
+    }
+
+    /// Django and Flask reloaders run the same command again as a child. uvicorn and hypercorn `--reload` start the
+    /// server through multiprocessing. Watchers such as watchfiles and hupper name themselves.
+    static func isPythonReloader(parent: [String], child: [String]) -> Bool {
+        let parentArgs = parent.dropFirst().filter { !$0.hasPrefix("-W") && !$0.hasPrefix("-X") }
+        let childArgs = child.dropFirst().filter { !$0.hasPrefix("-W") && !$0.hasPrefix("-X") }
+        if !parentArgs.isEmpty, parentArgs.elementsEqual(childArgs) { return true }
+        if child.contains(where: { $0.contains("multiprocessing") }) { return true }
+        let names = parent.dropFirst().map { (($0 as NSString).lastPathComponent as NSString).deletingPathExtension.lowercased() }
+        return names.contains { ["--reload", "runserver", "watchfiles", "watchmedo", "hupper"].contains($0) }
     }
 
     private func isPython(_ p: Inspected) -> Bool {
@@ -385,8 +409,10 @@ public final class PortScanner: @unchecked Sendable {
         return title.unicodeScalars.allSatisfy(plain.contains)
     }
 
-    /// Drops variables that only make sense inside the old process tree.
-    static func cleaned(_ env: [String]) -> [String] {
+    /// Drops variables that only make sense inside the old process tree. An environment without PATH was not
+    /// readable (macOS hides some), so the restart falls back to the login shell's instead of running with none.
+    static func cleaned(_ env: [String]) -> [String]? {
+        guard env.contains(where: { $0.hasPrefix("PATH=") }) else { return nil }
         let drop: Set<String> = ["RUN_MAIN", "WERKZEUG_RUN_MAIN", "WERKZEUG_SERVER_FD", "NODE_CHANNEL_FD",
                                  "NODE_UNIQUE_ID", "TERM_SESSION_ID", "ITERM_SESSION_ID", "SHLVL", "_"]
         return env.filter { entry in

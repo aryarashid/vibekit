@@ -8,8 +8,7 @@ struct LogPage: View {
     let back: () -> Void
     let onHeightChange: (CGFloat) -> Void
 
-    @State private var text = AttributedString()
-    @State private var follow = true
+    @State private var text = NSAttributedString()
 
     private var url: URL? { store.logURL(for: server) }
 
@@ -27,20 +26,7 @@ struct LogPage: View {
                 }
             }
             Divider().opacity(0.6)
-            ScrollViewReader { proxy in
-                ScrollView([.vertical]) {
-                    Text(text)
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .lineSpacing(1.5)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                    Color.clear.frame(height: 1).id("end")
-                }
-                .onChange(of: text) { _, _ in
-                    if follow { proxy.scrollTo("end", anchor: .bottom) }
-                }
-            }
+            LogTextView(text: text)
         }
         .onAppear { onHeightChange(PanelMetrics.maxHeight) }
         .task(id: url) {
@@ -54,7 +40,7 @@ struct LogPage: View {
                         ANSI.render(Self.tail(of: url, bytes: 96 * 1024))
                     }.value
                     guard !Task.isCancelled else { return }
-                    text = rendered
+                    text = NSAttributedString(rendered)
                 }
                 try? await Task.sleep(for: .milliseconds(600))
             }
@@ -78,9 +64,18 @@ struct LogPage: View {
 /// Turns terminal output into styled text: SGR colors and bold, carriage-return progress lines collapsed,
 /// and every other escape sequence dropped.
 enum ANSI {
+    // Fonts and paragraph styles are immutable, so sharing them across threads is safe.
+    nonisolated(unsafe) static let font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
+    nonisolated(unsafe) static let boldFont = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .bold)
+    nonisolated(unsafe) private static let paragraph: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 1.5
+        return style
+    }()
+
     static func render(_ input: String) -> AttributedString {
         var result = AttributedString()
-        var color: Color?
+        var color: NSColor?
         var bold = false
         var dim = false
 
@@ -93,9 +88,9 @@ enum ANSI {
             func flush() {
                 guard !segment.isEmpty else { return }
                 var piece = AttributedString(segment)
-                if let color { piece.foregroundColor = color }
-                if bold { piece.font = .system(size: 10.5, weight: .bold, design: .monospaced) }
-                if dim && color == nil { piece.foregroundColor = .secondary }
+                piece.appKit.font = bold ? boldFont : font
+                piece.appKit.paragraphStyle = paragraph
+                piece.appKit.foregroundColor = color ?? (dim ? .secondaryLabelColor : .labelColor)
                 result.append(piece)
                 segment = ""
             }
@@ -104,22 +99,37 @@ enum ANSI {
                 let char = line[index]
                 if char == "\u{1B}" {
                     let next = line.index(after: index)
-                    if next < line.endIndex, line[next] == "[" {
+                    guard next < line.endIndex else { break }
+                    switch line[next] {
+                    case "[":
                         var end = line.index(after: next)
                         while end < line.endIndex, !(line[end].isLetter || line[end] == "~") { end = line.index(after: end) }
-                        guard end < line.endIndex else { break }
+                        guard end < line.endIndex else { index = line.endIndex; continue }
                         if line[end] == "m" {
                             flush()
-                            let codes = line[line.index(after: next)..<end].split(separator: ";").compactMap { Int($0) }
+                            let codes = line[line.index(after: next)..<end].split(separator: ";", omittingEmptySubsequences: false)
+                                .map { Int($0) ?? 0 }
                             apply(codes.isEmpty ? [0] : codes, color: &color, bold: &bold, dim: &dim)
                         }
                         index = line.index(after: end)
-                        continue
+                    case "]", "P", "_", "^":
+                        // OSC (window titles, links) and other strings: skip to BEL or ESC \.
+                        index = line.index(after: next)
+                        while index < line.endIndex, line[index] != "\u{07}", line[index] != "\u{1B}" { index = line.index(after: index) }
+                        if index < line.endIndex, line[index] == "\u{1B}" {
+                            index = line.index(after: index)
+                            if index < line.endIndex, line[index] == "\\" { index = line.index(after: index) }
+                        } else if index < line.endIndex {
+                            index = line.index(after: index)
+                        }
+                    case "(", ")", "*", "+", "#", "%":
+                        // Character set and line size selection, such as `tput sgr0`'s ESC ( B: one more character.
+                        index = line.index(after: next)
+                        if index < line.endIndex { index = line.index(after: index) }
+                    default:
+                        // Two-character escapes such as ESC 7 and ESC =.
+                        index = line.index(after: next)
                     }
-                    // Other escapes (OSC titles and so on): skip to the terminator.
-                    index = next
-                    while index < line.endIndex, line[index] != "\u{07}", line[index] != "\\" { index = line.index(after: index) }
-                    if index < line.endIndex { index = line.index(after: index) }
                     continue
                 }
                 segment.append(char)
@@ -131,7 +141,7 @@ enum ANSI {
         return result
     }
 
-    private static func apply(_ codes: [Int], color: inout Color?, bold: inout Bool, dim: inout Bool) {
+    private static func apply(_ codes: [Int], color: inout NSColor?, bold: inout Bool, dim: inout Bool) {
         var i = 0
         while i < codes.count {
             let code = codes[i]
@@ -140,20 +150,60 @@ enum ANSI {
             case 1: bold = true
             case 2: dim = true
             case 22: bold = false; dim = false
-            case 30, 90: color = .secondary
-            case 31, 91: color = Color(nsColor: .systemRed)
-            case 32, 92: color = Color(nsColor: .systemGreen)
-            case 33, 93: color = Color(nsColor: .systemYellow)
-            case 34, 94: color = Color(nsColor: .systemBlue)
-            case 35, 95: color = Color(nsColor: .systemPurple)
-            case 36, 96: color = Color(nsColor: .systemTeal)
+            case 30, 90: color = .secondaryLabelColor
+            case 31, 91: color = .systemRed
+            case 32, 92: color = .systemGreen
+            case 33, 93: color = .systemYellow
+            case 34, 94: color = .systemBlue
+            case 35, 95: color = .systemPurple
+            case 36, 96: color = .systemTeal
             case 37, 97, 39: color = nil
-            case 38:
-                // 256-color and truecolor: skip the parameters and keep the default color.
+            case 38, 48, 58:
+                // 256-color and truecolor foreground, background and underline: skip their parameters.
+                // Foreground keeps the default color; backgrounds are not drawn.
                 i += codes.count > i + 1 && codes[i + 1] == 5 ? 2 : 4
             default: break
             }
             i += 1
         }
+    }
+}
+
+/// The log text, in a native text view: selectable, and quick with long output. New output is appended, so a
+/// selection survives, and the view follows the end only while you are at the end.
+private struct LogTextView: NSViewRepresentable {
+    let text: NSAttributedString
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        if let view = scroll.documentView as? NSTextView {
+            view.isEditable = false
+            view.isSelectable = true
+            view.drawsBackground = false
+            view.isRichText = true
+            view.textContainerInset = NSSize(width: 8, height: 10)
+            view.font = ANSI.font
+            view.setAccessibilityLabel("Log output")
+        }
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let view = scroll.documentView as? NSTextView, let storage = view.textStorage else { return }
+        let current = storage.string
+        let incoming = text.string
+        guard current != incoming else { return }
+        let visible = scroll.contentView.bounds
+        let atEnd = current.isEmpty || visible.maxY >= view.bounds.height - 30
+        if !current.isEmpty, incoming.hasPrefix(current) {
+            let added = NSRange(location: (current as NSString).length, length: (incoming as NSString).length - (current as NSString).length)
+            storage.append(text.attributedSubstring(from: added))
+        } else {
+            storage.setAttributedString(text)
+        }
+        if atEnd { view.scrollToEndOfDocument(nil) }
     }
 }

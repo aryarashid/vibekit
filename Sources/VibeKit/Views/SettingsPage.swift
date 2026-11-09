@@ -23,6 +23,18 @@ struct SettingsPage: View {
                         toggle("Show other listeners (apps and system services)", isOn: $settings.showOtherListeners)
                         toggle("Open with ⌃⌥⌘V from anywhere", isOn: $settings.hotKeyEnabled)
                         toggle("Open Prompts with ⌃⌥⌘P from anywhere", isOn: $settings.promptsHotKeyEnabled)
+                        if !settings.takenShortcuts.isEmpty {
+                            let keys = settings.takenShortcuts.sorted().reversed().joined(separator: " and ")
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning)
+                                Text("Another app already uses \(keys), so it does nothing here. The menu bar icon still works.")
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .font(Theme.metaFont)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 4)
+                        }
                     }
                     group("Prompts") {
                         toggle("Paste into the app in front when you pick a prompt", isOn: Binding(
@@ -123,10 +135,12 @@ struct SettingsPage: View {
         // Switches line up in one column on the right, like System Settings.
         HStack {
             Text(title).font(.system(size: 12.5))
+                .accessibilityHidden(true)
             Spacer(minLength: 8)
             Toggle(title, isOn: isOn)
                 .labelsHidden()
                 .toggleStyle(PanelSwitch())
+                .accessibilityLabel(title)
         }
         .padding(.horizontal, 16)
         .frame(height: 28)

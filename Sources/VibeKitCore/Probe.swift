@@ -5,10 +5,13 @@ import Foundation
 public struct PageInfo: Hashable, Sendable {
     public let status: Int
     public let title: String?
+    /// Answered over HTTPS only, so links to it must use `https://`.
+    public let isSecure: Bool
 
-    public init(status: Int, title: String?) {
+    public init(status: Int, title: String?, isSecure: Bool = false) {
         self.status = status
         self.title = title
+        self.isSecure = isSecure
     }
 }
 
@@ -22,11 +25,17 @@ public enum Probe {
         config.httpMaximumConnectionsPerHost = 2
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.httpAdditionalHeaders = ["User-Agent": "VibeKit", "Accept": "text/html,*/*;q=0.8"]
-        return URLSession(configuration: config)
+        return URLSession(configuration: config, delegate: LocalOnly(), delegateQueue: nil)
     }()
 
+    /// Asks over HTTP, then over HTTPS when the server did not answer plain HTTP.
     public static func page(host: String = "localhost", port: UInt16) async -> PageInfo? {
-        guard let url = URL(string: "http://\(host):\(port)/") else { return nil }
+        if let page = await page(scheme: "http", host: host, port: port) { return page }
+        return await page(scheme: "https", host: host, port: port)
+    }
+
+    static func page(scheme: String, host: String, port: UInt16) async -> PageInfo? {
+        guard let url = URL(string: "\(scheme)://\(host):\(port)/") else { return nil }
         do {
             let (bytes, response) = try await session.bytes(from: url)
             guard let http = response as? HTTPURLResponse else { return nil }
@@ -41,10 +50,31 @@ public enum Probe {
                 }
             }
             bytes.task.cancel()
-            return PageInfo(status: http.statusCode, title: isHTML ? title(in: data) : nil)
+            return PageInfo(status: http.statusCode, title: isHTML ? title(in: data) : nil, isSecure: scheme == "https")
         } catch {
             return nil
         }
+    }
+
+    /// Requests stay on this Mac. A redirect, such as to a sign-in page, is the answer itself: following it would
+    /// contact another site and report that site's status and title as the dev server's.
+    /// Local HTTPS servers use certificates made for development, so their certificate is accepted, for local hosts only.
+    private final class LocalOnly: NSObject, URLSessionTaskDelegate {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest) async -> URLRequest? { nil }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge) async
+            -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+            let space = challenge.protectionSpace
+            guard space.authenticationMethod == NSURLAuthenticationMethodServerTrust, let trust = space.serverTrust,
+                  Probe.isLocal(space.host) else { return (.performDefaultHandling, nil) }
+            return (.useCredential, URLCredential(trust: trust))
+        }
+    }
+
+    static func isLocal(_ host: String) -> Bool {
+        let bare = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        return bare == "localhost" || bare.hasPrefix("127.") || bare == "::1"
     }
 
     static func title(in data: Data) -> String? {

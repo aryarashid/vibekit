@@ -92,6 +92,7 @@ final class ServerStore {
 
     let settings: Settings
     @ObservationIgnored private let persistenceDirectory: URL
+    @ObservationIgnored private let logsDirectory: URL
     /// Called when the number of running dev servers changes, for the menu bar count.
     var onCountChange: ((Int) -> Void)?
 
@@ -100,8 +101,11 @@ final class ServerStore {
             guard isPanelOpen != oldValue else { return }
             if isPanelOpen {
                 lanAddress = Network.lanAddress()
-                // Ask again, once, about servers that were failing or silent last time.
+                // Ask again, once, about servers that were failing or silent last time, or not asked for a while,
+                // so a server that started failing since does not stay green.
+                let stale = Date().addingTimeInterval(-300)
                 staleProbes = Set(pages.filter { $0.value.status >= 500 }.keys).union(unanswered)
+                    .union(probedAt.filter { $0.value < stale }.keys)
                 retryAt.removeAll()
                 scanNow(fullSweep: true)
             }
@@ -117,6 +121,7 @@ final class ServerStore {
     @ObservationIgnored private var staleProbes = Set<String>()
     @ObservationIgnored private var probeAttempts: [String: Int] = [:]
     @ObservationIgnored private var retryAt: [String: Date] = [:]
+    @ObservationIgnored private var probedAt: [String: Date] = [:]
     /// Exit codes of servers Vibe Kit started, by PID, kept until the scan notices they are gone.
     @ObservationIgnored private var exitCodes: [Int32: Int32] = [:]
     @ObservationIgnored private var managed: [String: ManagedProcess] = [:]
@@ -143,9 +148,10 @@ final class ServerStore {
 
     private static let historyLength = 36
 
-    init(settings: Settings, persistenceDirectory: URL = ServerStore.supportDirectory) {
+    init(settings: Settings, persistenceDirectory: URL = ServerStore.supportDirectory, logsDirectory: URL = ServerStore.logsDirectory) {
         self.settings = settings
         self.persistenceDirectory = persistenceDirectory
+        self.logsDirectory = logsDirectory
         recents = Self.load([RecentServer].self, from: persistenceDirectory.appendingPathComponent("recents.json")) ?? []
         managed = (Self.load([String: ManagedProcess].self, from: persistenceDirectory.appendingPathComponent("managed.json")) ?? [:]).filter { _, process in
             LibProc.startDate(process.pid).map { abs($0.timeIntervalSince(process.started)) < 1 } ?? false
@@ -266,6 +272,7 @@ final class ServerStore {
         if unanswered.contains(where: { !ids.contains($0) }) { unanswered = unanswered.filter { ids.contains($0) } }
         probeAttempts = probeAttempts.filter { ids.contains($0.key) }
         retryAt = retryAt.filter { ids.contains($0.key) }
+        probedAt = probedAt.filter { ids.contains($0.key) }
 
         // Ports where `localhost` could reach more than one server. Other listeners count: AirPlay holds 5000 and 7000.
         var owners: [UInt16: Set<String>] = [:]
@@ -310,8 +317,9 @@ final class ServerStore {
                 let page = await Probe.page(host: host, port: port)
                 self.probing.remove(id)
                 guard self.servers.contains(where: { $0.id == id }) else { return }
+                self.probedAt[id] = Date()
                 if let page {
-                    self.pages[id] = page
+                    if self.pages[id] != page { self.pages[id] = page }
                     self.unanswered.remove(id)
                     self.probeAttempts[id] = nil
                 } else {
@@ -330,8 +338,15 @@ final class ServerStore {
 
     // MARK: Actions
 
+    /// The server's address on this Mac, over HTTPS when that is all it answered.
+    func url(for server: Server) -> URL? { server.localURL(secure: pages[server.id]?.isSecure ?? false) }
+
+    func networkURL(for server: Server) -> URL? {
+        server.networkURL(host: lanAddress, secure: pages[server.id]?.isSecure ?? false)
+    }
+
     func open(_ server: Server) {
-        guard let url = server.localURL else { return }
+        guard let url = url(for: server) else { return }
         NSWorkspace.shared.open(url)
     }
 
@@ -342,7 +357,7 @@ final class ServerStore {
     }
 
     func copyURL(_ server: Server) {
-        guard let url = server.localURL else { return }
+        guard let url = url(for: server) else { return }
         copy(url.absoluteString)
     }
 
@@ -360,10 +375,20 @@ final class ServerStore {
         }
     }
 
+    /// Also cancels a restart in progress: the restart sees it is no longer pending and does not start it again.
     func forceQuit(_ server: Server) {
         pending[server.id] = .stopping
+        schedule()
         ProcessControl.forceKill(root: server.rootPid, started: server.startDate)
         scanNow()
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            guard pending[server.id] == .stopping, ProcessControl.isAlive(server.rootPid),
+                  LibProc.startDate(server.rootPid).map({ abs($0.timeIntervalSince(server.startDate)) < 0.001 }) ?? false else { return }
+            pending[server.id] = nil
+            show(Toast(message: "Could not force quit \(server.title)", isError: true))
+            schedule()
+        }
     }
 
     func stopAll() {
@@ -383,6 +408,8 @@ final class ServerStore {
             }
             // Give the kernel a moment to release the port.
             try? await Task.sleep(for: .milliseconds(250))
+            // Force Quit while it was stopping means you want it gone, not back.
+            guard pending[server.id] == .restarting else { return }
             launchServer(launch, environment: launch.environment, entry: RecentServer(server, launch: launch, reason: .stopped, log: nil),
                          pendingID: server.id)
         }
@@ -416,7 +443,7 @@ final class ServerStore {
                 if shellEnvironment == nil { shellEnvironment = await ShellEnvironment.load() }
                 env = shellEnvironment
             }
-            let log = Self.logURL(name: name, port: entry.port, directory: spec.directory)
+            let log = Self.logURL(name: name, port: entry.port, directory: spec.directory, in: logsDirectory)
             let started = Date().addingTimeInterval(-1)
             do {
                 let spawned = try ProcessControl.spawn(spec, environment: env ?? ShellEnvironment.fallback(), log: log) { pid, code in
@@ -439,6 +466,8 @@ final class ServerStore {
                 }
             } catch {
                 pending[pendingID] = nil
+                // A restart already stopped the server. Keep it in Recently Stopped so it can be started again.
+                add(entry)
                 show(Toast(message: error.localizedDescription, isError: true))
                 schedule()
             }
@@ -446,7 +475,7 @@ final class ServerStore {
     }
 
     /// One log per project folder and port, so two projects with the same name do not share a file.
-    private static func logURL(name: String, port: UInt16, directory: String) -> URL {
+    private static func logURL(name: String, port: UInt16, directory: String, in logsDirectory: URL) -> URL {
         let slug = name.lowercased().replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
         var hash: UInt32 = 2_166_136_261  // FNV-1a, stable across launches unlike `hashValue`.
         for byte in directory.utf8 { hash = (hash ^ UInt32(byte)) &* 16_777_619 }
@@ -460,12 +489,19 @@ final class ServerStore {
         if reason == .exited, let code = exitCodes.removeValue(forKey: server.rootPid), Self.isCrash(code) {
             reason = .crashed(code: code)
         }
+        guard Self.isWorthRemembering(reason: reason, lifetime: Date().timeIntervalSince(server.startDate)) else { return }
         let recent = RecentServer(server, launch: launch, reason: reason, log: log)
         if log != nil, reason == .exited {
             recentPids[server.rootPid] = recent.id
             if recentPids.count > 32 { recentPids.removeAll() }
         }
         add(recent)
+    }
+
+    /// A server that ended on its own within seconds of starting was a test run or a one-off script, not one to start
+    /// again. Without this, a test suite that opens a server per test fills Recently Stopped with copies on random ports.
+    static func isWorthRemembering(reason: StopReason, lifetime: TimeInterval) -> Bool {
+        reason != .exited || lifetime >= 20
     }
 
     private func add(_ recent: RecentServer) {

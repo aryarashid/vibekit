@@ -112,7 +112,9 @@ public enum PromptLibrary {
         return try decoder.decode([Prompt].self, from: data)
     }
 
-    public static func save(_ prompts: [Prompt], to url: URL) throws {
+    public static func save(_ prompts: [Prompt], to link: URL) throws {
+        // A prompts.json kept in a dotfiles repo is often a symlink. Write to its target, so the link survives.
+        let url = link.resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
