@@ -50,6 +50,8 @@ struct PromptListPage: View {
     @State private var keyboardMoved = false
     @State private var clipboardText: String?
     @State private var pendingUse: Task<Void, Never>?
+    /// See `ServerListPage.hoverLock`.
+    @State private var hoverLock: NSPoint?
     @FocusState private var searchFocused: Bool
 
     private static let headerHeight: CGFloat = 46
@@ -94,7 +96,7 @@ struct PromptListPage: View {
                 .focused($searchFocused)
                 .onKeyPress(.downArrow) { move(1, in: list); return .handled }
                 .onKeyPress(.upArrow) { move(-1, in: list); return .handled }
-                .onKeyPress(.return) { use(list.first { $0.id == selection } ?? (list.count == 1 ? list.first : nil)); return .handled }
+                .onKeyPress(.return) { use(active(in: list)); return .handled }
                 .onKeyPress(.tab) { tab = .servers; return .handled }
                 .onKeyPress(.escape) {
                     if !query.isEmpty { query = "" } else { close() }
@@ -128,27 +130,28 @@ struct PromptListPage: View {
                 .padding(.vertical, 26)
             } else {
                 let maxScore = list.map { $0.score() }.max() ?? 0
+                let active = active(in: list)?.id
                 let pinned = list.filter(\.pinned)
                 let rest = list.filter { !$0.pinned }
                 if !pinned.isEmpty && query.isEmpty {
                     SectionHeader(title: "Pinned", count: pinned.count)
-                    rows(pinned, maxScore: maxScore, offset: 0)
+                    rows(pinned, maxScore: maxScore, offset: 0, active: active)
                     SectionHeader(title: "Most Used", count: rest.count)
-                    rows(rest, maxScore: maxScore, offset: pinned.count)
+                    rows(rest, maxScore: maxScore, offset: pinned.count, active: active)
                 } else {
                     SectionHeader(title: query.isEmpty ? "Most Used" : "Results", count: list.count)
-                    rows(list, maxScore: maxScore, offset: 0)
+                    rows(list, maxScore: maxScore, offset: 0, active: active)
                 }
             }
         }
         .padding(.bottom, 6)
     }
 
-    private func rows(_ items: [Prompt], maxScore: Double, offset: Int) -> some View {
+    private func rows(_ items: [Prompt], maxScore: Double, offset: Int, active: UUID?) -> some View {
         ForEach(Array(items.enumerated()), id: \.element.id) { index, prompt in
             PromptRow(prompt: prompt, number: offset + index + 1, heat: maxScore > 0 ? prompt.score() / maxScore : 0,
-                      isSelected: selection == prompt.id, wasUsed: used == prompt.id,
-                      onHover: { selection = prompt.id },
+                      isSelected: active == prompt.id, wasUsed: used == prompt.id,
+                      onHover: { hover(prompt.id) },
                       onUse: { use(prompt) },
                       onCopy: { copyOnly(prompt) },
                       onEdit: { route = .prompt(prompt.id) },
@@ -255,9 +258,11 @@ struct PromptListPage: View {
 
     // MARK: Actions
 
-    /// Copies, or pastes when that is on. A copy flashes the row first, so you see it worked before the panel goes.
+    /// Copies, or pastes when that is on. The copy happens at once; the row flashes before the panel goes,
+    /// so you see it worked, and closing the panel meanwhile cannot lose it.
     private func use(_ prompt: Prompt?) {
         guard let prompt else { return }
+        prompts.copy(prompt)
         if store.settings.pasteOnUse && PromptStore.canPaste {
             onUse(prompt)
             return
@@ -285,21 +290,39 @@ struct PromptListPage: View {
     private func move(_ delta: Int, in list: [Prompt]) {
         guard !list.isEmpty else { return }
         keyboardMoved = true
-        guard let current = selection, let index = list.firstIndex(where: { $0.id == current }) else {
+        hoverLock = NSEvent.mouseLocation
+        guard let current = active(in: list)?.id, let index = list.firstIndex(where: { $0.id == current }) else {
             selection = delta > 0 ? list.first?.id : list.last?.id
             return
         }
         selection = list[(index + delta + list.count) % list.count].id
     }
 
+    /// The prompt keys act on: the one you picked, or while you type, the top match.
+    private func active(in list: [Prompt]) -> Prompt? {
+        if let selection, let picked = list.first(where: { $0.id == selection }) { return picked }
+        // While you type, the top match. Otherwise a lone prompt, so ↩ uses it without a click.
+        return query.trimmingCharacters(in: .whitespaces).isEmpty && list.count > 1 ? nil : list.first
+    }
+
+    private func hover(_ id: UUID) {
+        if let hoverLock, hoverLock == NSEvent.mouseLocation { return }
+        hoverLock = nil
+        selection = id
+    }
+
     private func shortcuts(_ list: [Prompt]) -> some View {
-        let selected = list.first { $0.id == selection }
+        let selected = active(in: list)
         return ZStack {
             Button("") { route = .prompt(nil) }.keyboardShortcut("n", modifiers: .command)
             Button("") { if let selected { route = .prompt(selected.id) } }.keyboardShortcut("e", modifiers: .command)
             Button("") { if let selected { prompts.togglePin(selected) } }.keyboardShortcut("p", modifiers: .command)
             Button("") { if let selected { copyOnly(selected) } }.keyboardShortcut("c", modifiers: [.command, .shift])
-            Button("") { if let selected { prompts.delete(selected) } }.keyboardShortcut(.delete, modifiers: .command)
+            // While you type, ⌘⌫ deletes to the start of the line, as in any text field. It deletes only a prompt
+            // you picked, never the fallback, so pressing it once more after the search clears deletes nothing.
+            Button("") { if let picked = list.first(where: { $0.id == selection }) { prompts.delete(picked) } }
+                .keyboardShortcut(.delete, modifiers: .command)
+                .disabled(!query.isEmpty)
             Button("") { route = .settings }.keyboardShortcut(",", modifiers: .command)
             ForEach(1..<10) { number in
                 Button("") { if number <= list.count { selection = list[number - 1].id; use(list[number - 1]) } }
@@ -373,7 +396,11 @@ struct PromptRow: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(prompt.displayTitle)
+        .accessibilityValue(prompt.pinned ? "Pinned, \(usageHelp)" : usageHelp)
         .accessibilityAction(named: "Use", onUse)
+        .accessibilityAction(named: "Copy", onCopy)
+        .accessibilityAction(named: prompt.pinned ? "Unpin" : "Pin", onPin)
+        .accessibilityAction(named: "Edit", onEdit)
     }
 
     /// A pin for pinned prompts. Otherwise a small level meter: how much you use this prompt next to your favorite.
@@ -413,7 +440,7 @@ struct PromptRow: View {
         } else {
             VStack(alignment: .trailing, spacing: 2) {
                 if number <= 9 {
-                    Text("⌘\(number)").font(.system(size: 10, weight: .medium, design: .rounded)).foregroundStyle(.quaternary)
+                    Text("⌘\(number)").font(.system(size: 10, weight: .medium, design: .rounded)).foregroundStyle(.tertiary)
                 }
                 Text(usage)
                     .font(.system(size: 9.5, design: .monospaced))
@@ -447,6 +474,7 @@ struct PromptEditor: View {
     @State private var title = ""
     @State private var text = ""
     @State private var savedID: UUID?
+    @State private var pendingSave: Task<Void, Never>?
     @FocusState private var focus: Field?
 
     private enum Field { case title, text }
@@ -497,6 +525,8 @@ struct PromptEditor: View {
                 Spacer()
                 if let current = savedID.flatMap(prompts.prompt) {
                     Button("Delete") {
+                        pendingSave?.cancel()
+                        pendingSave = nil
                         prompts.delete(current)
                         savedID = nil
                         text = ""
@@ -512,16 +542,41 @@ struct PromptEditor: View {
         }
         .onAppear {
             savedID = id
+            var naming = false
             if let id, let prompt = prompts.prompt(id) {
                 title = prompt.title
                 text = prompt.text
+                // Just saved from Services or the clipboard: it needs a name more than an edit.
+                naming = prompt.title.isEmpty && Date().timeIntervalSince(prompt.created) < 10
             }
             onHeightChange(440)
-            focus = .text
+            // Like the search fields: focus asked for before the panel is key can be ignored.
+            DispatchQueue.main.async { focus = naming ? .title : .text }
         }
-        .onDisappear { removeIfEmptied() }
-        .onChange(of: title) { _, _ in commit() }
-        .onChange(of: text) { _, _ in commit() }
+        .onDisappear {
+            flush()
+            removeIfEmptied()
+        }
+        .onChange(of: title) { _, _ in scheduleSave() }
+        .onChange(of: text) { _, _ in scheduleSave() }
+    }
+
+    /// Saves shortly after you stop typing, not on every key, so a large library or a synced file stays quick.
+    private func scheduleSave() {
+        pendingSave?.cancel()
+        pendingSave = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            pendingSave = nil
+            commit()
+        }
+    }
+
+    private func flush() {
+        guard pendingSave != nil else { return }
+        pendingSave?.cancel()
+        pendingSave = nil
+        commit()
     }
 
     private var isEmpty: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -542,6 +597,8 @@ struct PromptEditor: View {
     }
 
     private func done() {
+        pendingSave?.cancel()
+        pendingSave = nil
         commit()
         removeIfEmptied()
         back()

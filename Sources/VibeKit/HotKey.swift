@@ -9,10 +9,11 @@ final class HotKey {
         /// Control-Option-Command-P: the panel, on Prompts.
         case prompts = 2
 
-        var code: Int {
+        /// The key that types V or P on the current layout.
+        @MainActor var code: Int {
             switch self {
-            case .panel: kVK_ANSI_V
-            case .prompts: kVK_ANSI_P
+            case .panel: KeyLayout.keyCode(for: "v", fallback: kVK_ANSI_V)
+            case .prompts: KeyLayout.keyCode(for: "p", fallback: kVK_ANSI_P)
             }
         }
     }
@@ -21,15 +22,22 @@ final class HotKey {
     private var handlerRef: EventHandlerRef?
     private static var actions: [Key: () -> Void] = [:]
 
-    func set(_ key: Key, enabled: Bool, action: @escaping () -> Void) {
+    /// Returns false when the shortcut is on but another app already owns it.
+    @discardableResult
+    func set(_ key: Key, enabled: Bool, action: @escaping () -> Void) -> Bool {
         if let ref = refs.removeValue(forKey: key) { UnregisterEventHotKey(ref) }
         Self.actions[key] = enabled ? action : nil
-        guard enabled else { return }
+        guard enabled else { return true }
         installHandler()
         var ref: EventHotKeyRef?
         let id = EventHotKeyID(signature: OSType(0x564B_4954), id: key.rawValue) // "VKIT"
-        RegisterEventHotKey(UInt32(key.code), UInt32(cmdKey | optionKey | controlKey), id, GetApplicationEventTarget(), 0, &ref)
-        if let ref { refs[key] = ref }
+        let status = RegisterEventHotKey(UInt32(key.code), UInt32(cmdKey | optionKey | controlKey), id, GetApplicationEventTarget(), 0, &ref)
+        guard status == noErr, let ref else {
+            Self.actions[key] = nil
+            return false
+        }
+        refs[key] = ref
+        return true
     }
 
     private func installHandler() {

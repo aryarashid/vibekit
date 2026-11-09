@@ -144,6 +144,11 @@ struct ServerListPage: View {
     @State private var selection: String?
     @State private var expanded: String?
     @State private var confirmStopAll = false
+    /// Where the pointer was when the keyboard last moved the selection. Rows that scroll or expand under a still
+    /// pointer must not take the selection, or a shortcut would act on a server you did not pick.
+    @State private var hoverLock: NSPoint?
+    /// Whether the port typed in the search is free. Worked out when the query changes, not on every redraw.
+    @State private var portCheck: (port: UInt16, free: Bool)?
     @FocusState private var searchFocused: Bool
 
     private static let headerHeight: CGFloat = 46
@@ -152,13 +157,14 @@ struct ServerListPage: View {
     var body: some View {
         let sections = makeSections()
         let items = sections.flatMap(\.items)
+        let active = activeID(in: items)
 
         VStack(spacing: 0) {
             header(items: items)
             Divider().opacity(0.6)
             ScrollViewReader { proxy in
                 MeasuredScroll(onHeight: { onHeightChange($0 + Self.headerHeight + Self.footerHeight + 1) }) {
-                    content(sections)
+                    content(sections, active: active)
                 }
                 .onChange(of: selection) { _, id in
                     guard let id, keyboardMoved else { return }
@@ -200,6 +206,7 @@ struct ServerListPage: View {
                 .onKeyPress(.return) { activate(items); return .handled }
                 .onKeyPress(.rightArrow) {
                     guard query.isEmpty, let id = selection, !id.hasPrefix("recent:") else { return .ignored }
+                    hoverLock = NSEvent.mouseLocation
                     toggleDetails(id)
                     return .handled
                 }
@@ -211,6 +218,7 @@ struct ServerListPage: View {
                 .onChange(of: query) { _, _ in
                     selection = nil
                     expanded = nil
+                    portCheck = queriedPort.map { ($0, Network.isPortFree($0)) }
                 }
             if !query.isEmpty {
                 IconButton(symbol: "xmark.circle.fill", help: "Clear search", size: 22) { query = "" }
@@ -264,7 +272,7 @@ struct ServerListPage: View {
     }
 
     @ViewBuilder
-    private func content(_ sections: [Section]) -> some View {
+    private func content(_ sections: [Section], active: String?) -> some View {
         VStack(spacing: 0) {
             if !store.hasScanned {
                 HStack(spacing: 8) {
@@ -280,7 +288,7 @@ struct ServerListPage: View {
                     emptyState
                 }
                 ForEach(sections) { section in
-                    sectionView(section)
+                    sectionView(section, active: active)
                 }
             }
         }
@@ -288,7 +296,7 @@ struct ServerListPage: View {
     }
 
     @ViewBuilder
-    private func sectionView(_ section: Section) -> some View {
+    private func sectionView(_ section: Section, active: String?) -> some View {
         if section.collapsible {
             let count = store.servers(in: .other).filter(matches).count
             SectionHeader(title: section.title, count: count, collapsed: section.items.isEmpty)
@@ -309,20 +317,20 @@ struct ServerListPage: View {
             SectionHeader(title: section.title, count: section.items.count)
         }
         ForEach(section.items) { item in
-            row(item).id(item.id)
+            row(item, isSelected: active == item.id).id(item.id)
         }
     }
 
     @ViewBuilder
-    private func row(_ item: Item) -> some View {
+    private func row(_ item: Item, isSelected: Bool) -> some View {
         switch item {
         case .server(let server):
-            ServerRow(server: server, store: store, isSelected: selection == item.id, isExpanded: expanded == item.id,
-                      onHover: { selection = item.id },
+            ServerRow(server: server, store: store, isSelected: isSelected, isExpanded: expanded == item.id,
+                      onHover: { hover(item.id) },
                       onToggleDetails: { toggleDetails(item.id) },
                       onShowLogs: { route = .logs($0) })
         case .recent(let recent):
-            RecentRow(recent: recent, store: store, isSelected: selection == item.id, onHover: { selection = item.id })
+            RecentRow(recent: recent, store: store, isSelected: isSelected, onHover: { hover(item.id) })
         }
     }
 
@@ -345,8 +353,8 @@ struct ServerListPage: View {
 
     private var noMatches: some View {
         VStack(spacing: 6) {
-            if let port = UInt16(query.trimmingCharacters(in: CharacterSet(charactersIn: ": "))), port > 0 {
-                let free = Network.isPortFree(port)
+            if let portCheck, portCheck.port == queriedPort {
+                let port = portCheck.port, free = portCheck.free
                 Text(free ? "Port \(String(port)) is free" : "Port \(String(port)) is taken")
                     .font(.system(size: 13, weight: .semibold))
                 Text(free ? "Nothing is listening on it." : "Another user or a system service holds it, so Vibe Kit can't show or stop it.")
@@ -364,6 +372,8 @@ struct ServerListPage: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 26)
+        // Checked again each time this shows, so a port freed after you typed it reads as free.
+        .onAppear { portCheck = queriedPort.map { ($0, Network.isPortFree($0)) } }
     }
 
     // MARK: Footer
@@ -457,13 +467,21 @@ struct ServerListPage: View {
     // MARK: Keyboard
 
     private func shortcuts(items: [Item]) -> some View {
+        let active = activeID(in: items)
         let server: Server? = {
+            guard let active, case .server(let s)? = items.first(where: { $0.id == active }) else { return nil }
+            return s
+        }()
+        let picked: Server? = {
             guard let selection, case .server(let s)? = items.first(where: { $0.id == selection }) else { return nil }
             return s
         }()
         return ZStack {
             Button("") { if let server { store.restart(server) } }.keyboardShortcut("r", modifiers: .command)
-            Button("") { if let server { store.stop(server) } }.keyboardShortcut(.delete, modifiers: .command)
+            // While you type, ⌘⌫ deletes to the start of the line, as in any text field. It stops only a row you
+            // picked, never the fallback, so pressing it once more after the search clears stops nothing.
+            Button("") { if let picked { store.stop(picked) } }.keyboardShortcut(.delete, modifiers: .command)
+                .disabled(!query.isEmpty)
             Button("") { if let server { store.copyURL(server) } }.keyboardShortcut("c", modifiers: [.command, .shift])
             Button("") { if let server { store.openInEditor(server); close() } }.keyboardShortcut("o", modifiers: .command)
             Button("") { if let server { store.openInTerminal(server); close() } }.keyboardShortcut("t", modifiers: .command)
@@ -483,7 +501,8 @@ struct ServerListPage: View {
     private func move(_ delta: Int, in items: [Item]) {
         guard !items.isEmpty else { return }
         keyboardMoved = true
-        guard let current = selection, let index = items.firstIndex(where: { $0.id == current }) else {
+        hoverLock = NSEvent.mouseLocation
+        guard let current = activeID(in: items), let index = items.firstIndex(where: { $0.id == current }) else {
             selection = delta > 0 ? items.first?.id : items.last?.id
             return
         }
@@ -491,7 +510,26 @@ struct ServerListPage: View {
     }
 
     private func activate(_ items: [Item]) {
-        activate(items.first { $0.id == selection } ?? (items.count == 1 ? items.first : nil))
+        let active = activeID(in: items)
+        activate(items.first { $0.id == active })
+    }
+
+    /// The row keys act on: the one you picked, or while you type, the top match.
+    private func activeID(in items: [Item]) -> String? {
+        if let selection, items.contains(where: { $0.id == selection }) { return selection }
+        // While you type, the top match. Otherwise a lone row, so ↩ opens it without a click.
+        return query.trimmingCharacters(in: .whitespaces).isEmpty && items.count > 1 ? nil : items.first?.id
+    }
+
+    private func hover(_ id: String) {
+        if let hoverLock, hoverLock == NSEvent.mouseLocation { return }
+        hoverLock = nil
+        selection = id
+    }
+
+    /// A port number typed in the search, such as `3000` or `:3000`.
+    private var queriedPort: UInt16? {
+        UInt16(query.trimmingCharacters(in: CharacterSet(charactersIn: ": "))).flatMap { $0 > 0 ? $0 : nil }
     }
 
     private func activate(_ target: Item?) {
@@ -520,6 +558,7 @@ struct ServerListPage: View {
     }
 
     private func toggleDetails(_ id: String) {
+        hoverLock = NSEvent.mouseLocation
         withAnimation(.snappy(duration: 0.22)) { expanded = expanded == id ? nil : id }
     }
 
@@ -536,8 +575,10 @@ struct ServerListPage: View {
         }
         let haystack = [server.title, server.framework.name, server.processName, server.command,
                         server.project?.branch ?? "", server.project?.subpath ?? "", server.project?.worktree ?? "",
-                        store.pages[server.id]?.title ?? ""]
-        return haystack.contains { $0.lowercased().contains(q) }
+                        store.pages[server.id]?.title ?? "", server.ports.map { String($0.port) }.joined(separator: " ")]
+            .joined(separator: "\n").lowercased()
+        // Every word must match somewhere, so "storefront next" finds the Next.js server of storefront.
+        return q.split(separator: " ").allSatisfy { haystack.contains($0) }
     }
 
     private func matches(_ recent: RecentServer) -> Bool {
@@ -545,7 +586,8 @@ struct ServerListPage: View {
         guard !q.isEmpty else { return true }
         let port = q.trimmingCharacters(in: CharacterSet(charactersIn: ":"))
         if !port.isEmpty, port.allSatisfy(\.isNumber) { return String(recent.port).hasPrefix(port) }
-        return [recent.title, recent.frameworkName, recent.launch.displayCommand, recent.branch ?? ""]
-            .contains { $0.lowercased().contains(q) }
+        let haystack = [recent.title, recent.frameworkName, recent.launch.displayCommand, recent.branch ?? "", String(recent.port)]
+            .joined(separator: "\n").lowercased()
+        return q.split(separator: " ").allSatisfy { haystack.contains($0) }
     }
 }

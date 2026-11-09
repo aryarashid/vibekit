@@ -9,6 +9,15 @@ if arguments.contains("--list") {
 }
 
 if arguments.contains("--toggle") {
+    // Scripts can tell when nothing heard the request.
+    let running = NSWorkspace.shared.runningApplications.contains {
+        ($0.bundleIdentifier == "dev.vibekit.VibeKit" || $0.executableURL?.lastPathComponent == "VibeKit")
+            && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+    }
+    guard running else {
+        FileHandle.standardError.write(Data("Vibe Kit is not running. Open it first.\n".utf8))
+        exit(1)
+    }
     // `--toggle prompts` opens on the Prompts tab.
     let tab = arguments.firstIndex(of: "--toggle").flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
     DistributedNotificationCenter.default().postNotificationName(

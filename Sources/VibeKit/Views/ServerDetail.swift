@@ -27,12 +27,12 @@ struct ServerDetail: View {
                 }
             }
 
-            if let url = server.localURL {
+            if let url = store.url(for: server) {
                 line("globe", url.absoluteString, mono: true) {
                     IconButton(symbol: "doc.on.doc", help: "Copy", size: 22) { store.copy(url.absoluteString) }
                 }
             }
-            if let network = server.networkURL(host: store.lanAddress) {
+            if let network = store.networkURL(for: server) {
                 line("wifi", network.absoluteString, mono: true) {
                     IconButton(symbol: "qrcode", help: showQR ? "Hide QR code" : "Show QR code to open on a phone", size: 22) {
                         withAnimation(.easeOut(duration: 0.18)) { showQR.toggle() }

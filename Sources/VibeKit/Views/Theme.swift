@@ -122,6 +122,6 @@ enum Format {
 
     static func path(_ path: String) -> String {
         let home = NSHomeDirectory()
-        return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
+        return path == home || path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
     }
 }

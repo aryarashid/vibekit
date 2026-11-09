@@ -1,3 +1,4 @@
+import Carbon.HIToolbox
 import AppKit
 import SwiftUI
 
@@ -34,6 +35,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `VibeKit --toggle` opens or closes the panel of the running copy, for scripts and launchers.
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(toggleRequested), name: AppDelegate.toggleNotification, object: nil)
+        // The shortcuts follow the letters V and P, so register them again when the keyboard layout changes.
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(keyboardLayoutChanged),
+            name: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil)
         // Services › Add to Vibe Kit, in the right-click menu of selected text in any app.
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
@@ -76,9 +81,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func keyboardLayoutChanged() { applyHotKey() }
+
     private func applyHotKey() {
-        hotKey.set(.panel, enabled: settings.hotKeyEnabled) { [weak self] in self?.togglePanel(tab: .servers) }
-        hotKey.set(.prompts, enabled: settings.promptsHotKeyEnabled) { [weak self] in self?.togglePanel(tab: .prompts) }
+        var taken: Set<String> = []
+        if !hotKey.set(.panel, enabled: settings.hotKeyEnabled, action: { [weak self] in self?.togglePanel(tab: .servers) }) {
+            taken.insert("⌃⌥⌘V")
+        }
+        if !hotKey.set(.prompts, enabled: settings.promptsHotKeyEnabled, action: { [weak self] in self?.togglePanel(tab: .prompts) }) {
+            taken.insert("⌃⌥⌘P")
+        }
+        if settings.takenShortcuts != taken { settings.takenShortcuts = taken }
     }
 
     private func updateStatusItem(count: Int) {
@@ -90,7 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .baselineOffset: 0.5,
             ])
         } else {
-            button.title = ""
+            button.attributedTitle = NSAttributedString()
         }
         button.setAccessibilityLabel(count == 1 ? "Vibe Kit, 1 dev server running" : "Vibe Kit, \(count) dev servers running")
     }

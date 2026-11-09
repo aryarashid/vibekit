@@ -8,8 +8,7 @@ struct LogPage: View {
     let back: () -> Void
     let onHeightChange: (CGFloat) -> Void
 
-    @State private var text = AttributedString()
-    @State private var follow = true
+    @State private var text = NSAttributedString()
 
     private var url: URL? { store.logURL(for: server) }
 
@@ -27,20 +26,7 @@ struct LogPage: View {
                 }
             }
             Divider().opacity(0.6)
-            ScrollViewReader { proxy in
-                ScrollView([.vertical]) {
-                    Text(text)
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .lineSpacing(1.5)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                    Color.clear.frame(height: 1).id("end")
-                }
-                .onChange(of: text) { _, _ in
-                    if follow { proxy.scrollTo("end", anchor: .bottom) }
-                }
-            }
+            LogTextView(text: text)
         }
         .onAppear { onHeightChange(PanelMetrics.maxHeight) }
         .task(id: url) {
@@ -54,7 +40,7 @@ struct LogPage: View {
                         ANSI.render(Self.tail(of: url, bytes: 96 * 1024))
                     }.value
                     guard !Task.isCancelled else { return }
-                    text = rendered
+                    text = NSAttributedString(rendered)
                 }
                 try? await Task.sleep(for: .milliseconds(600))
             }
@@ -78,13 +64,25 @@ struct LogPage: View {
 /// Turns terminal output into styled text: SGR colors and bold, carriage-return progress lines collapsed,
 /// and every other escape sequence dropped.
 enum ANSI {
+    // Fonts and paragraph styles are immutable, so sharing them across threads is safe.
+    nonisolated(unsafe) static let font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
+    nonisolated(unsafe) static let boldFont = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .bold)
+    nonisolated(unsafe) private static let paragraph: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 1.5
+        return style
+    }()
+
     static func render(_ input: String) -> AttributedString {
         var result = AttributedString()
-        var color: Color?
+        var color: NSColor?
         var bold = false
         var dim = false
 
-        for rawLine in input.split(separator: "\n", omittingEmptySubsequences: false) {
+        var lines = input.split(separator: "\n", omittingEmptySubsequences: false)
+        // Output that ends with a newline has no line after it. Without this, the text would end in a blank line.
+        if lines.count > 1, lines.last?.isEmpty == true { lines.removeLast() }
+        for rawLine in lines {
             // Progress bars redraw with \r; keep only what was drawn last.
             let line = rawLine.split(separator: "\r", omittingEmptySubsequences: false).last(where: { !$0.isEmpty }) ?? ""
             var segment = ""
@@ -93,9 +91,9 @@ enum ANSI {
             func flush() {
                 guard !segment.isEmpty else { return }
                 var piece = AttributedString(segment)
-                if let color { piece.foregroundColor = color }
-                if bold { piece.font = .system(size: 10.5, weight: .bold, design: .monospaced) }
-                if dim && color == nil { piece.foregroundColor = .secondary }
+                piece.appKit.font = bold ? boldFont : font
+                piece.appKit.paragraphStyle = paragraph
+                piece.appKit.foregroundColor = color ?? (dim ? .secondaryLabelColor : .labelColor)
                 result.append(piece)
                 segment = ""
             }
@@ -104,22 +102,43 @@ enum ANSI {
                 let char = line[index]
                 if char == "\u{1B}" {
                     let next = line.index(after: index)
-                    if next < line.endIndex, line[next] == "[" {
+                    guard next < line.endIndex else { break }
+                    switch line[next] {
+                    case "[":
                         var end = line.index(after: next)
                         while end < line.endIndex, !(line[end].isLetter || line[end] == "~") { end = line.index(after: end) }
-                        guard end < line.endIndex else { break }
+                        guard end < line.endIndex else { index = line.endIndex; continue }
                         if line[end] == "m" {
                             flush()
-                            let codes = line[line.index(after: next)..<end].split(separator: ";").compactMap { Int($0) }
-                            apply(codes.isEmpty ? [0] : codes, color: &color, bold: &bold, dim: &dim)
+                            // Colon form (38:2:255:0:0, 4:3) carries its own sub-parameters: keep the first number,
+                            // and drop colors entirely, since their values are not the next codes.
+                            let codes = line[line.index(after: next)..<end].split(separator: ";", omittingEmptySubsequences: false)
+                                .compactMap { param -> Int? in
+                                    guard param.contains(":") else { return Int(param) ?? 0 }
+                                    let first = param.split(separator: ":").first.flatMap { Int($0) } ?? 0
+                                    return [38, 48, 58].contains(first) ? nil : first
+                                }
+                            apply(codes, color: &color, bold: &bold, dim: &dim)
                         }
                         index = line.index(after: end)
-                        continue
+                    case "]", "P", "_", "^":
+                        // OSC (window titles, links) and other strings: skip to BEL or ESC \.
+                        index = line.index(after: next)
+                        while index < line.endIndex, line[index] != "\u{07}", line[index] != "\u{1B}" { index = line.index(after: index) }
+                        if index < line.endIndex, line[index] == "\u{1B}" {
+                            index = line.index(after: index)
+                            if index < line.endIndex, line[index] == "\\" { index = line.index(after: index) }
+                        } else if index < line.endIndex {
+                            index = line.index(after: index)
+                        }
+                    case "(", ")", "*", "+", "#", "%":
+                        // Character set and line size selection, such as `tput sgr0`'s ESC ( B: one more character.
+                        index = line.index(after: next)
+                        if index < line.endIndex { index = line.index(after: index) }
+                    default:
+                        // Two-character escapes such as ESC 7 and ESC =.
+                        index = line.index(after: next)
                     }
-                    // Other escapes (OSC titles and so on): skip to the terminator.
-                    index = next
-                    while index < line.endIndex, line[index] != "\u{07}", line[index] != "\\" { index = line.index(after: index) }
-                    if index < line.endIndex { index = line.index(after: index) }
                     continue
                 }
                 segment.append(char)
@@ -131,7 +150,7 @@ enum ANSI {
         return result
     }
 
-    private static func apply(_ codes: [Int], color: inout Color?, bold: inout Bool, dim: inout Bool) {
+    private static func apply(_ codes: [Int], color: inout NSColor?, bold: inout Bool, dim: inout Bool) {
         var i = 0
         while i < codes.count {
             let code = codes[i]
@@ -140,20 +159,128 @@ enum ANSI {
             case 1: bold = true
             case 2: dim = true
             case 22: bold = false; dim = false
-            case 30, 90: color = .secondary
-            case 31, 91: color = Color(nsColor: .systemRed)
-            case 32, 92: color = Color(nsColor: .systemGreen)
-            case 33, 93: color = Color(nsColor: .systemYellow)
-            case 34, 94: color = Color(nsColor: .systemBlue)
-            case 35, 95: color = Color(nsColor: .systemPurple)
-            case 36, 96: color = Color(nsColor: .systemTeal)
+            case 30, 90: color = .secondaryLabelColor
+            case 31, 91: color = .systemRed
+            case 32, 92: color = .systemGreen
+            case 33, 93: color = .systemYellow
+            case 34, 94: color = .systemBlue
+            case 35, 95: color = .systemPurple
+            case 36, 96: color = .systemTeal
             case 37, 97, 39: color = nil
-            case 38:
-                // 256-color and truecolor: skip the parameters and keep the default color.
+            case 38, 48, 58:
+                // 256-color and truecolor foreground, background and underline: skip their parameters.
+                // Foreground keeps the default color; backgrounds are not drawn.
                 i += codes.count > i + 1 && codes[i + 1] == 5 ? 2 : 4
             default: break
             }
             i += 1
         }
+    }
+}
+
+/// The log text, in a native text view: selectable, and quick with long output. New output is appended, so a
+/// selection survives, and the view follows the end only while you are at the end.
+struct LogTextView: NSViewRepresentable {
+    let text: NSAttributedString
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        if let view = scroll.documentView as? NSTextView {
+            view.isEditable = false
+            view.isSelectable = true
+            view.drawsBackground = false
+            view.isRichText = true
+            view.textContainerInset = NSSize(width: 8, height: 10)
+            view.font = ANSI.font
+            view.setAccessibilityLabel("Log output")
+            // TextKit 1 from the start: trimming old lines measures their height through the layout manager.
+            _ = view.layoutManager
+        }
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let view = scroll.documentView as? NSTextView, let storage = view.textStorage else { return }
+        let current = storage.string
+        let incoming = text.string
+        guard current != incoming else { return }
+        let visible = scroll.contentView.bounds
+        let atEnd = current.isEmpty || visible.maxY >= view.bounds.height - 30
+        let oldLength = (current as NSString).length, newLength = (incoming as NSString).length
+        if let (dropped, kept) = Self.overlap(from: current, to: incoming) {
+            // Edit the text in place instead of replacing it, so a selection survives and, while you read further
+            // up, the text stays where it is: drop lines that left the window, redo a last line that changed, add the rest.
+            var removedHeight: CGFloat = 0
+            if dropped > 0, let layout = view.layoutManager {
+                removedHeight = layout.lineFragmentRect(forGlyphAt: layout.glyphIndexForCharacter(at: dropped), effectiveRange: nil).minY
+            }
+            // NSTextView collapses the selection when its storage changes, so carry it across, shifted.
+            let selection = view.selectedRanges.map(\.rangeValue).compactMap { range -> NSValue? in
+                guard range.length > 0, range.location >= dropped, NSMaxRange(range) <= dropped + kept else { return nil }
+                return NSValue(range: NSRange(location: range.location - dropped, length: range.length))
+            }
+            storage.beginEditing()
+            storage.deleteCharacters(in: NSRange(location: dropped + kept, length: oldLength - dropped - kept))
+            storage.deleteCharacters(in: NSRange(location: 0, length: dropped))
+            storage.append(text.attributedSubstring(from: NSRange(location: kept, length: newLength - kept)))
+            // Colors can depend on an escape that just left the window, so the kept text takes the new render's style.
+            if dropped > 0 {
+                text.enumerateAttributes(in: NSRange(location: 0, length: kept)) { attributes, range, _ in
+                    storage.setAttributes(attributes, range: range)
+                }
+            }
+            storage.endEditing()
+            if !selection.isEmpty { view.selectedRanges = selection }
+            if removedHeight > 0, !atEnd {
+                let origin = scroll.contentView.bounds.origin
+                scroll.contentView.scroll(to: NSPoint(x: origin.x, y: max(0, origin.y - removedHeight)))
+                scroll.reflectScrolledClipView(scroll.contentView)
+            }
+        } else {
+            storage.setAttributedString(text)
+        }
+        if atEnd { view.scrollToEndOfDocument(nil) }
+    }
+
+    /// How `new` continues `old`: the characters that fell off the front of `old` as the tail window moved, and how
+    /// many after them `new` begins with. The last line of `old` is never kept, since a progress line redraws.
+    /// Nil when the two do not overlap, such as after a restart cleared the log.
+    static func overlap(from old: String, to new: String) -> (dropped: Int, kept: Int)? {
+        let old = old as NSString, new = new as NSString
+        guard old.length > 0, new.length > 0 else { return nil }
+        // Everything before the last line.
+        let trimmed = old.hasSuffix("\n") ? old.length - 1 : old.length
+        let lastBreak = old.range(of: "\n", options: .backwards, range: NSRange(location: 0, length: trimmed))
+        guard lastBreak.location != NSNotFound else { return nil }
+        let body = old.substring(to: lastBreak.location + 1) as NSString
+        if new.hasPrefix(body as String) { return (0, body.length) }
+        let kept = longestSuffixThatStarts(Array((body as String).utf16), Array((new as String).utf16))
+        return kept > 0 ? (body.length - kept, kept) : nil
+    }
+
+    /// The length of the longest end of `text` that is also the start of `pattern`, in one linear pass
+    /// (Knuth–Morris–Pratt). However much output repeats, this finds the real overlap without a stall.
+    static func longestSuffixThatStarts(_ text: [UInt16], _ pattern: [UInt16]) -> Int {
+        let pattern = pattern.prefix(text.count)
+        guard !pattern.isEmpty else { return 0 }
+        // failure[i]: the longest proper border of pattern[0...i].
+        var failure = [Int](repeating: 0, count: pattern.count)
+        var k = 0
+        for i in 1..<pattern.count {
+            while k > 0, pattern[i] != pattern[k] { k = failure[k - 1] }
+            if pattern[i] == pattern[k] { k += 1 }
+            failure[i] = k
+        }
+        var q = 0
+        for unit in text {
+            // A full match before the end cannot be the answer; fall back to its longest border and go on.
+            if q == pattern.count { q = failure[q - 1] }
+            while q > 0, unit != pattern[q] { q = failure[q - 1] }
+            if unit == pattern[q] { q += 1 }
+        }
+        return q
     }
 }

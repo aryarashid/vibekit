@@ -67,4 +67,17 @@ struct PromptTests {
         try Data(#"[{"text": "Only text"},"#.utf8).write(to: url)
         #expect(throws: (any Error).self) { try PromptLibrary.load(from: url) }
     }
+
+    @Test func savingThroughASymlinkKeepsTheLink() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vk-link-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let target = dir.appendingPathComponent("dotfiles-prompts.json")
+        let link = dir.appendingPathComponent("prompts.json")
+        try PromptLibrary.save([], to: target)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        try PromptLibrary.save([Prompt(title: "T", text: "Body", created: now)], to: link)
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: link.path) == target.path)
+        #expect(try PromptLibrary.load(from: target).map(\.text) == ["Body"])
+    }
 }

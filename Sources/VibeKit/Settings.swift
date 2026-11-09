@@ -23,6 +23,8 @@ final class Settings {
     var terminalID: String? { didSet { defaults.set(terminalID, forKey: "terminalID") } }
 
     private(set) var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
+    /// Shortcuts that are on but owned by another app, so Settings can say so. Not saved.
+    var takenShortcuts: Set<String> = []
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
