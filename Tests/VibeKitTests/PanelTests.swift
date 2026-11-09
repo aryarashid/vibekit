@@ -125,10 +125,12 @@ final class PanelTests: XCTestCase {
             return view.subviews.lazy.compactMap { searchField(in: $0) }.first
         }
         let field = try XCTUnwrap(searchField(in: host))
-        let editor = try XCTUnwrap(field.currentEditor())
-        editor.string = "zz-no-match"
-        field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
-        pump(0.15)
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        // Exercise AppKit's input/notification pipeline, rather than directly invoking
+        // SwiftUI's runtime-specific delegate implementation.
+        editor.insertText("zz-no-match", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+        let deadline = Date().addingTimeInterval(2)
+        while panel.frame.height >= 250 && Date() < deadline { pump(0.01) }
         XCTAssertEqual(field.stringValue, "zz-no-match")
         XCTAssertLessThan(panel.frame.height, 250)
         let rect = field.convert(field.bounds, to: host)
