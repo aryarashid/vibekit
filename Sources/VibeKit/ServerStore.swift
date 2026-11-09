@@ -91,6 +91,7 @@ final class ServerStore {
     private(set) var hasScanned = false
 
     let settings: Settings
+    @ObservationIgnored private let persistenceDirectory: URL
     /// Called when the number of running dev servers changes, for the menu bar count.
     var onCountChange: ((Int) -> Void)?
 
@@ -111,6 +112,7 @@ final class ServerStore {
     @ObservationIgnored private let scanner = PortScanner()
     @ObservationIgnored private let queue = DispatchQueue(label: "dev.vibekit.scan", qos: .utility)
     @ObservationIgnored private var timer: DispatchSourceTimer?
+    @ObservationIgnored private var isDemo = false
     @ObservationIgnored private var probing = Set<String>()
     @ObservationIgnored private var staleProbes = Set<String>()
     @ObservationIgnored private var probeAttempts: [String: Int] = [:]
@@ -141,10 +143,11 @@ final class ServerStore {
 
     private static let historyLength = 36
 
-    init(settings: Settings) {
+    init(settings: Settings, persistenceDirectory: URL = ServerStore.supportDirectory) {
         self.settings = settings
-        recents = Self.load([RecentServer].self, from: "recents.json") ?? []
-        managed = (Self.load([String: ManagedProcess].self, from: "managed.json") ?? [:]).filter { _, process in
+        self.persistenceDirectory = persistenceDirectory
+        recents = Self.load([RecentServer].self, from: persistenceDirectory.appendingPathComponent("recents.json")) ?? []
+        managed = (Self.load([String: ManagedProcess].self, from: persistenceDirectory.appendingPathComponent("managed.json")) ?? [:]).filter { _, process in
             LibProc.startDate(process.pid).map { abs($0.timeIntervalSince(process.started)) < 1 } ?? false
         }
     }
@@ -177,6 +180,7 @@ final class ServerStore {
     /// 1.5 s while the panel is open, 4 s with generous leeway while it is closed, so the system can batch wakeups.
     private func schedule() {
         timer?.cancel()
+        guard !isDemo else { return }
         let open = isPanelOpen || !pending.isEmpty
         let interval: DispatchTimeInterval = open ? .milliseconds(1500) : .seconds(4)
         let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -187,6 +191,7 @@ final class ServerStore {
     }
 
     func scanNow(fullSweep: Bool = false) {
+        guard !isDemo else { return }
         queue.async(execute: Self.scanJob(scanner, categories: scanCategories, fullSweep: fullSweep, store: self))
     }
 
@@ -205,6 +210,7 @@ final class ServerStore {
     }
 
     private func apply(_ scanned: [Server]) {
+        guard !isDemo else { return }
         let sorted = scanned.sorted { a, b in
             let order: [ServerCategory] = [.dev, .database, .service, .other]
             if a.category != b.category { return order.firstIndex(of: a.category)! < order.firstIndex(of: b.category)! }
@@ -533,6 +539,7 @@ final class ServerStore {
 
     /// Shows fixed sample servers instead of scanning, for `--snapshot --demo` screenshots. Nothing is saved.
     func showDemo(servers: [Server], pages: [String: PageInfo], history: [String: [Double]], recents: [RecentServer]) {
+        isDemo = true
         timer?.cancel()
         self.servers = servers
         self.pages = pages
@@ -552,17 +559,18 @@ final class ServerStore {
     static let logsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Logs/VibeKit", isDirectory: true)
 
-    private static func load<T: Decodable>(_ type: T.Type, from file: String) -> T? {
-        guard let data = try? Data(contentsOf: supportDirectory.appendingPathComponent(file)) else { return nil }
+    private static func load<T: Decodable>(_ type: T.Type, from file: URL) -> T? {
+        guard let data = try? Data(contentsOf: file) else { return nil }
         return try? JSONDecoder().decode(type, from: data)
     }
 
-    private static func save<T: Encodable>(_ value: T, to file: String) {
-        try? FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
+    private func save<T: Encodable>(_ value: T, to file: String) {
+        guard !isDemo else { return }
+        try? FileManager.default.createDirectory(at: persistenceDirectory, withIntermediateDirectories: true)
         guard let data = try? JSONEncoder().encode(value) else { return }
-        try? data.write(to: supportDirectory.appendingPathComponent(file), options: .atomic)
+        try? data.write(to: persistenceDirectory.appendingPathComponent(file), options: .atomic)
     }
 
-    private func saveRecents() { Self.save(recents, to: "recents.json") }
-    private func saveManaged() { Self.save(managed, to: "managed.json") }
+    private func saveRecents() { save(recents, to: "recents.json") }
+    private func saveManaged() { save(managed, to: "managed.json") }
 }

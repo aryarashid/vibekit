@@ -13,19 +13,21 @@ enum Bench {
         let start = cpu()
         var worst: UInt64 = 0
         var ticks = 0
-        let end = Date().addingTimeInterval(TimeInterval(seconds))
-        while Date() < end {
+        let wallStart = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+        let duration = Double(max(seconds, 1))
+        func elapsed() -> Double { Double(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) - wallStart) / 1e9 }
+        while elapsed() < duration {
             let before = cpu()
             _ = scanner.scan(usageFor: categories)
             let spent = cpu() - before
             worst = max(worst, spent)
             ticks += 1
-            Thread.sleep(forTimeInterval: interval)
+            Thread.sleep(forTimeInterval: max(0, min(interval, duration - elapsed())))
         }
         let total = Double(cpu() - start) / 1e6
         print(String(format: "%@: %d scans, %.2f ms CPU per scan on average, worst %.2f ms, %.3f%% of one core",
                      panelOpen ? "panel open" : "panel closed", ticks, total / Double(ticks), Double(worst) / 1e6,
-                     total / Double(seconds * 1000) * 100))
+                     total / (elapsed() * 1000) * 100))
         print(scanner.stats)
     }
 }

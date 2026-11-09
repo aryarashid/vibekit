@@ -8,7 +8,7 @@ enum PanelTab: String {
 
 @MainActor @Observable
 final class Settings {
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
 
     /// Show apps and system services that listen on a port, not only dev servers.
     var showOtherListeners: Bool { didSet { defaults.set(showOtherListeners, forKey: "showOtherListeners") } }
@@ -24,7 +24,8 @@ final class Settings {
 
     private(set) var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
 
-    init() {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         defaults.register(defaults: ["showCountInMenuBar": true, "hotKeyEnabled": true, "promptsHotKeyEnabled": true])
         showOtherListeners = defaults.bool(forKey: "showOtherListeners")
         showCountInMenuBar = defaults.bool(forKey: "showCountInMenuBar")

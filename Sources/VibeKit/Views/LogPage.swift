@@ -50,21 +50,25 @@ struct LogPage: View {
                 let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? UInt64) ?? 0
                 if size != lastSize {
                     lastSize = size
-                    let tail = Self.tail(of: url, bytes: 96 * 1024)
-                    text = ANSI.render(tail)
+                    let rendered = await Task.detached(priority: .utility) {
+                        ANSI.render(Self.tail(of: url, bytes: 96 * 1024))
+                    }.value
+                    guard !Task.isCancelled else { return }
+                    text = rendered
                 }
                 try? await Task.sleep(for: .milliseconds(600))
             }
         }
     }
 
-    static func tail(of url: URL, bytes: Int) -> String {
+    nonisolated static func tail(of url: URL, bytes: Int) -> String {
+        guard bytes > 0 else { return "" }
         guard let handle = try? FileHandle(forReadingFrom: url) else { return "" }
         defer { try? handle.close() }
         let size = (try? handle.seekToEnd()) ?? 0
         let start = size > UInt64(bytes) ? size - UInt64(bytes) : 0
         try? handle.seek(toOffset: start)
-        let data = (try? handle.readToEnd()) ?? Data()
+        let data = (try? handle.read(upToCount: bytes)) ?? Data()
         var string = String(decoding: data, as: UTF8.self)
         if start > 0, let newline = string.firstIndex(of: "\n") { string = String(string[string.index(after: newline)...]) }
         return string.isEmpty ? "Waiting for output…" : string

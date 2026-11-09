@@ -9,7 +9,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var panel = PanelController(store: store, prompts: prompts)
     private var statusItem: NSStatusItem!
     private let hotKey = HotKey()
-    private var lastClose = Date.distantPast
     private var observation: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -27,7 +26,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.onCountChange = { [weak self] count in self?.updateStatusItem(count: count) }
         panel.onVisibilityChange = { [weak self] visible in
             self?.statusItem.button?.highlight(visible)
-            if !visible { self?.lastClose = Date() }
         }
         store.start()
         settings.enableLaunchAtLoginOnFirstRun()
@@ -40,7 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
         // Load SwiftUI before the first click, once launch has settled.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.panel.prewarm() }
+        DispatchQueue.main.async { [weak self] in self?.panel.prewarm() }
     }
 
     /// The Services menu item. Saves the selected text as a prompt and opens it so you can name it.
@@ -106,8 +104,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func togglePanel(tab: PanelTab? = nil) {
-        // A click on the icon first closes the panel through resign-key; do not reopen it straight away.
-        if !panel.isVisible && Date().timeIntervalSince(lastClose) < 0.25 { return }
         panel.toggle(from: statusItem.button, tab: tab)
     }
 
