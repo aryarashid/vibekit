@@ -247,8 +247,7 @@ struct LogTextView: NSViewRepresentable {
 
     /// How `new` continues `old`: the characters that fell off the front of `old` as the tail window moved, and how
     /// many after them `new` begins with. The last line of `old` is never kept, since a progress line redraws.
-    /// Nil when the two do not overlap, such as after a restart cleared the log. Bounded work: a few bulk compares,
-    /// so a log of identical lines cannot stall the main thread.
+    /// Nil when the two do not overlap, such as after a restart cleared the log.
     static func overlap(from old: String, to new: String) -> (dropped: Int, kept: Int)? {
         let old = old as NSString, new = new as NSString
         guard old.length > 0, new.length > 0 else { return nil }
@@ -258,56 +257,30 @@ struct LogTextView: NSViewRepresentable {
         guard lastBreak.location != NSNotFound else { return nil }
         let body = old.substring(to: lastBreak.location + 1) as NSString
         if new.hasPrefix(body as String) { return (0, body.length) }
-        // A line that appears once in each text pins down how far the window slid, however much output repeats.
-        if let aligned = alignOnUniqueLine(body, new) { return aligned }
-        // Every line repeats, as in a stream of identical health checks. Then any overlap of the same text is right;
-        // find the end of the body in the new text and check the whole overlap once.
-        let anchorLength = min(512, body.length / 2)
-        guard anchorLength > 0 else { return nil }
-        let anchor = body.substring(from: body.length - anchorLength)
-        // From the right, so the longest overlap wins: with repeated lines, an earlier hit also matches but would
-        // drop most of the text, and with it your place and selection.
-        var searchEnd = min(new.length, body.length - 1)
-        for _ in 0..<4 {
-            guard searchEnd >= anchorLength else { return nil }
-            let found = new.range(of: anchor, options: .backwards, range: NSRange(location: 0, length: searchEnd))
-            guard found.location != NSNotFound else { return nil }
-            let kept = NSMaxRange(found)
-            let dropped = body.length - kept
-            if body.substring(from: dropped) == new.substring(to: kept) { return (dropped, kept) }
-            searchEnd = kept - 1
-        }
-        return nil
+        let kept = longestSuffixThatStarts(Array((body as String).utf16), Array((new as String).utf16))
+        return kept > 0 ? (body.length - kept, kept) : nil
     }
 
-    /// The overlap found through a line that occurs exactly once in `body` and once in `new`, tried from the end of
-    /// `body`, where the kept part is. Linear: one pass to count lines in each text, then one compare per try.
-    private static func alignOnUniqueLine(_ body: NSString, _ new: NSString) -> (dropped: Int, kept: Int)? {
-        func lines(_ s: NSString) -> [(start: Int, text: String)] {
-            var result: [(Int, String)] = []
-            var start = 0
-            while start < s.length {
-                let newline = s.range(of: "\n", range: NSRange(location: start, length: s.length - start))
-                let end = newline.location == NSNotFound ? s.length : newline.location + 1
-                result.append((start, s.substring(with: NSRange(location: start, length: end - start))))
-                start = end
-            }
-            return result
+    /// The length of the longest end of `text` that is also the start of `pattern`, in one linear pass
+    /// (Knuth–Morris–Pratt). However much output repeats, this finds the real overlap without a stall.
+    static func longestSuffixThatStarts(_ text: [UInt16], _ pattern: [UInt16]) -> Int {
+        let pattern = pattern.prefix(text.count)
+        guard !pattern.isEmpty else { return 0 }
+        // failure[i]: the longest proper border of pattern[0...i].
+        var failure = [Int](repeating: 0, count: pattern.count)
+        var k = 0
+        for i in 1..<pattern.count {
+            while k > 0, pattern[i] != pattern[k] { k = failure[k - 1] }
+            if pattern[i] == pattern[k] { k += 1 }
+            failure[i] = k
         }
-        let bodyLines = lines(body), newLines = lines(new)
-        var bodyCounts: [String: Int] = [:]
-        for line in bodyLines { bodyCounts[line.text, default: 0] += 1 }
-        var newPlaces: [String: (count: Int, start: Int)] = [:]
-        for line in newLines { newPlaces[line.text, default: (0, line.start)].count += 1 }
-        var tries = 0
-        for line in bodyLines.reversed() where bodyCounts[line.text] == 1 {
-            guard let place = newPlaces[line.text], place.count == 1 else { continue }
-            let dropped = line.start - place.start
-            let kept = body.length - dropped
-            if dropped > 0, kept <= new.length, body.substring(from: dropped) == new.substring(to: kept) { return (dropped, kept) }
-            tries += 1
-            if tries == 3 { return nil }
+        var q = 0
+        for unit in text {
+            // A full match before the end cannot be the answer; fall back to its longest border and go on.
+            if q == pattern.count { q = failure[q - 1] }
+            while q > 0, unit != pattern[q] { q = failure[q - 1] }
+            if unit == pattern[q] { q += 1 }
         }
-        return nil
+        return q
     }
 }

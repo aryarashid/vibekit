@@ -82,6 +82,24 @@ final class LogTests: XCTestCase {
         XCTAssertEqual(result?.dropped, 50 * 20)
     }
 
+    func testStartupLinesSlidingOffARepeatedStreamKeepThePlace() {
+        let startup = (1...12).map { "startup step \($0)\n" }.joined()
+        let health = "GET /api/health 200\n"
+        let old = startup + String(repeating: health, count: 500)
+        let new = String(repeating: health, count: 600)  // All startup lines left the window.
+        let result = LogTextView.overlap(from: old, to: new)
+        XCTAssertEqual(result?.dropped, (startup as NSString).length)
+        XCTAssertEqual(result?.kept, 499 * 20)
+    }
+
+    func testLongestSuffixThatStartsAPattern() {
+        func units(_ s: String) -> [UInt16] { Array(s.utf16) }
+        XCTAssertEqual(LogTextView.longestSuffixThatStarts(units("abcabc"), units("abcx")), 3)
+        XCTAssertEqual(LogTextView.longestSuffixThatStarts(units("xxab"), units("ab")), 2)  // The whole pattern, at the end.
+        XCTAssertEqual(LogTextView.longestSuffixThatStarts(units("abxx"), units("ab")), 0)
+        XCTAssertEqual(LogTextView.longestSuffixThatStarts(units("aaaa"), units("aaaaaa")), 4)
+    }
+
     func testOutputEndingInANewlineHasNoBlankLastLine() {
         XCTAssertEqual(String(ANSI.render("a\nb\n").characters), "a\nb\n")
     }
