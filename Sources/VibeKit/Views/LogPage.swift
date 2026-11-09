@@ -226,6 +226,12 @@ struct LogTextView: NSViewRepresentable {
             storage.deleteCharacters(in: NSRange(location: dropped + kept, length: oldLength - dropped - kept))
             storage.deleteCharacters(in: NSRange(location: 0, length: dropped))
             storage.append(text.attributedSubstring(from: NSRange(location: kept, length: newLength - kept)))
+            // Colors can depend on an escape that just left the window, so the kept text takes the new render's style.
+            if dropped > 0 {
+                text.enumerateAttributes(in: NSRange(location: 0, length: kept)) { attributes, range, _ in
+                    storage.setAttributes(attributes, range: range)
+                }
+            }
             storage.endEditing()
             if !selection.isEmpty { view.selectedRanges = selection }
             if removedHeight > 0, !atEnd {
