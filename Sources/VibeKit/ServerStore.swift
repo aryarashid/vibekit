@@ -437,13 +437,16 @@ final class ServerStore {
     /// Starts `spec`. `entry` describes the server for the recent list, in case it fails before it comes up.
     private func launchServer(_ spec: LaunchSpec, environment: [String]?, entry: RecentServer, pendingID: String) {
         let name = entry.title
+        let state = pending[pendingID]
         Task {
             var env = environment
             if env == nil {
                 if shellEnvironment == nil { shellEnvironment = await ShellEnvironment.load() }
                 env = shellEnvironment
+                // Force Quit while the shell environment loaded means you want it gone, not back.
+                guard pending[pendingID] == state else { return }
             }
-            let log = Self.logURL(name: name, port: entry.port, directory: spec.directory, in: logsDirectory)
+            let log = freeLogURL(name: name, port: entry.port, directory: spec.directory)
             let started = Date().addingTimeInterval(-1)
             do {
                 let spawned = try ProcessControl.spawn(spec, environment: env ?? ShellEnvironment.fallback(), log: log) { pid, code in
@@ -475,6 +478,20 @@ final class ServerStore {
     }
 
     /// One log per project folder and port, so two projects with the same name do not share a file.
+    /// The log for a launch. Two servers on one port (IPv4 and IPv6) must not share a file, because opening it for
+    /// the second would erase the first's output.
+    private func freeLogURL(name: String, port: UInt16, directory: String) -> URL {
+        let base = Self.logURL(name: name, port: port, directory: directory, in: logsDirectory)
+        let inUse = Set(managed.values.filter { ProcessControl.isAlive($0.pid) && LibProc.startDate($0.pid) == $0.started }.map(\.log))
+        var log = base
+        var n = 2
+        while inUse.contains(log) {
+            log = base.deletingPathExtension().appendingPathExtension("\(n)").appendingPathExtension("log")
+            n += 1
+        }
+        return log
+    }
+
     private static func logURL(name: String, port: UInt16, directory: String, in logsDirectory: URL) -> URL {
         let slug = name.lowercased().replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
         var hash: UInt32 = 2_166_136_261  // FNV-1a, stable across launches unlike `hashValue`.
@@ -489,7 +506,7 @@ final class ServerStore {
         if reason == .exited, let code = exitCodes.removeValue(forKey: server.rootPid), Self.isCrash(code) {
             reason = .crashed(code: code)
         }
-        guard Self.isWorthRemembering(reason: reason, lifetime: Date().timeIntervalSince(server.startDate)) else { return }
+        guard Self.isWorthRemembering(reason: reason, lifetime: Date().timeIntervalSince(server.startDate), managed: log != nil) else { return }
         let recent = RecentServer(server, launch: launch, reason: reason, log: log)
         if log != nil, reason == .exited {
             recentPids[server.rootPid] = recent.id
@@ -500,8 +517,9 @@ final class ServerStore {
 
     /// A server that ended on its own within seconds of starting was a test run or a one-off script, not one to start
     /// again. Without this, a test suite that opens a server per test fills Recently Stopped with copies on random ports.
-    static func isWorthRemembering(reason: StopReason, lifetime: TimeInterval) -> Bool {
-        reason != .exited || lifetime >= 20
+    /// A server Vibe Kit started is always kept: its exit code may still arrive and mark it as crashed.
+    static func isWorthRemembering(reason: StopReason, lifetime: TimeInterval, managed: Bool) -> Bool {
+        managed || reason != .exited || lifetime >= 20
     }
 
     private func add(_ recent: RecentServer) {

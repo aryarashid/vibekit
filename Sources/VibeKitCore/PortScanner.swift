@@ -316,7 +316,8 @@ public final class PortScanner: @unchecked Sendable {
         let parentArgs = parent.dropFirst().filter { !$0.hasPrefix("-W") && !$0.hasPrefix("-X") }
         let childArgs = child.dropFirst().filter { !$0.hasPrefix("-W") && !$0.hasPrefix("-X") }
         if !parentArgs.isEmpty, parentArgs.elementsEqual(childArgs) { return true }
-        if child.contains(where: { $0.contains("multiprocessing") }) { return true }
+        // The spawn worker: `python -c "from multiprocessing.spawn import spawn_main; ..." --multiprocessing-fork`.
+        if child.contains("--multiprocessing-fork") || child.contains(where: { $0.hasPrefix("from multiprocessing") }) { return true }
         let names = parent.dropFirst().map { (($0 as NSString).lastPathComponent as NSString).deletingPathExtension.lowercased() }
         return names.contains { ["--reload", "runserver", "watchfiles", "watchmedo", "hupper"].contains($0) }
     }

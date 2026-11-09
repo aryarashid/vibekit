@@ -510,7 +510,8 @@ struct ServerListPage: View {
     /// The row keys act on: the one you picked, or while you type, the top match.
     private func activeID(in items: [Item]) -> String? {
         if let selection, items.contains(where: { $0.id == selection }) { return selection }
-        return query.trimmingCharacters(in: .whitespaces).isEmpty ? nil : items.first?.id
+        // While you type, the top match. Otherwise a lone row, so ↩ opens it without a click.
+        return query.trimmingCharacters(in: .whitespaces).isEmpty && items.count > 1 ? nil : items.first?.id
     }
 
     private func hover(_ id: String) {

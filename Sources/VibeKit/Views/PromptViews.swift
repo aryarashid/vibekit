@@ -301,7 +301,8 @@ struct PromptListPage: View {
     /// The prompt keys act on: the one you picked, or while you type, the top match.
     private func active(in list: [Prompt]) -> Prompt? {
         if let selection, let picked = list.first(where: { $0.id == selection }) { return picked }
-        return query.trimmingCharacters(in: .whitespaces).isEmpty ? nil : list.first
+        // While you type, the top match. Otherwise a lone prompt, so ↩ uses it without a click.
+        return query.trimmingCharacters(in: .whitespaces).isEmpty && list.count > 1 ? nil : list.first
     }
 
     private func hover(_ id: UUID) {

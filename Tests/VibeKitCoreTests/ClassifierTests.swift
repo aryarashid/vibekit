@@ -415,5 +415,8 @@ struct PythonLaunchUnitTests {
 
     @Test func aSupervisorScriptIsNotPartOfTheServer() {
         #expect(!PortScanner.isPythonReloader(parent: ["python", "supervisor.py"], child: ["python", "-m", "http.server", "8000"]))
+        // A path that happens to contain the word is not a multiprocessing worker.
+        #expect(!PortScanner.isPythonReloader(parent: ["python", "supervisor.py"],
+                                              child: ["python", "-m", "http.server", "--directory", "/tmp/multiprocessing-assets"]))
     }
 }
