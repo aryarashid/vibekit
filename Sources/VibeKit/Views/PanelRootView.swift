@@ -372,6 +372,8 @@ struct ServerListPage: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 26)
+        // Checked again each time this shows, so a port freed after you typed it reads as free.
+        .onAppear { portCheck = queriedPort.map { ($0, Network.isPortFree($0)) } }
     }
 
     // MARK: Footer

@@ -341,8 +341,11 @@ final class ServerStore {
     /// The server's address on this Mac, over HTTPS when that is all it answered.
     func url(for server: Server) -> URL? { server.localURL(secure: pages[server.id]?.isSecure ?? false) }
 
+    /// The probe only asks the primary port, so its HTTPS answer applies only when that is the port shared on the network.
     func networkURL(for server: Server) -> URL? {
-        server.networkURL(host: lanAddress, secure: pages[server.id]?.isSecure ?? false)
+        let exposed = server.ports.first { $0.isWildcard && $0.acceptsIPv4 }?.port
+        let secure = exposed == server.primaryPort && (pages[server.id]?.isSecure ?? false)
+        return server.networkURL(host: lanAddress, secure: secure)
     }
 
     func open(_ server: Server) {
