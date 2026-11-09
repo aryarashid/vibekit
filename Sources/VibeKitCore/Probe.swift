@@ -28,17 +28,25 @@ public enum Probe {
         return URLSession(configuration: config, delegate: LocalOnly(), delegateQueue: nil)
     }()
 
-    /// Asks over HTTP, then over HTTPS when the server did not answer plain HTTP.
+    /// Asks over HTTP, then over HTTPS when the server dropped or garbled the plain HTTP request. A timeout or a
+    /// refused connection is not tried again: a server still compiling would log a TLS handshake it cannot read.
     public static func page(host: String = "localhost", port: UInt16) async -> PageInfo? {
-        if let page = await page(scheme: "http", host: host, port: port) { return page }
-        return await page(scheme: "https", host: host, port: port)
+        switch await attempt(scheme: "http", host: host, port: port) {
+        case .success(let page): return page
+        case .failure(let error) where [.timedOut, .cannotConnectToHost, .cancelled].contains(error.code): return nil
+        case .failure: return try? await attempt(scheme: "https", host: host, port: port).get()
+        }
     }
 
     static func page(scheme: String, host: String, port: UInt16) async -> PageInfo? {
-        guard let url = URL(string: "\(scheme)://\(host):\(port)/") else { return nil }
+        try? await attempt(scheme: scheme, host: host, port: port).get()
+    }
+
+    private static func attempt(scheme: String, host: String, port: UInt16) async -> Result<PageInfo, URLError> {
+        guard let url = URL(string: "\(scheme)://\(host):\(port)/") else { return .failure(URLError(.badURL)) }
         do {
             let (bytes, response) = try await session.bytes(from: url)
-            guard let http = response as? HTTPURLResponse else { return nil }
+            guard let http = response as? HTTPURLResponse else { return .failure(URLError(.badServerResponse)) }
             var data = Data()
             let isHTML = (http.value(forHTTPHeaderField: "Content-Type") ?? "").contains("html")
             if isHTML {
@@ -50,9 +58,11 @@ public enum Probe {
                 }
             }
             bytes.task.cancel()
-            return PageInfo(status: http.statusCode, title: isHTML ? title(in: data) : nil, isSecure: scheme == "https")
+            return .success(PageInfo(status: http.statusCode, title: isHTML ? title(in: data) : nil, isSecure: scheme == "https"))
+        } catch let error as URLError {
+            return .failure(error)
         } catch {
-            return nil
+            return .failure(URLError(.unknown))
         }
     }
 

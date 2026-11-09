@@ -28,4 +28,25 @@ final class LogTests: XCTestCase {
         XCTAssertEqual(run.appKit.foregroundColor, .labelColor)
         XCTAssertEqual(run.appKit.font, ANSI.font)
     }
+
+    func testColonFormColorsDoNotResetTheLine() {
+        let output = ANSI.render("\u{1B}[1m\u{1B}[38:2:255:0:0mbold")
+        XCTAssertEqual(output.runs.first?.appKit.font, ANSI.boldFont)
+    }
+
+    func testASlidingTailWindowIsAnOverlapNotANewText() {
+        let old = "line 1\nline 2\nprogress 4"
+        // The window moved: line 1 fell off, and the progress line was redrawn.
+        let slid = LogTextView.overlap(from: old, to: "line 2\nprogress 100%\nline 3\n")
+        XCTAssertEqual(slid?.dropped, 7)
+        XCTAssertEqual(slid?.kept, 16)
+        // Plain growth keeps everything.
+        XCTAssertEqual(LogTextView.overlap(from: "a\nb\n", to: "a\nb\nc\n")?.kept, 4)
+        // A cleared log is new text.
+        XCTAssertNil(LogTextView.overlap(from: old, to: "Waiting for output…"))
+    }
+
+    func testOutputEndingInANewlineHasNoBlankLastLine() {
+        XCTAssertEqual(String(ANSI.render("a\nb\n").characters), "a\nb\n")
+    }
 }

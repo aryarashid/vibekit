@@ -79,7 +79,10 @@ enum ANSI {
         var bold = false
         var dim = false
 
-        for rawLine in input.split(separator: "\n", omittingEmptySubsequences: false) {
+        var lines = input.split(separator: "\n", omittingEmptySubsequences: false)
+        // Output that ends with a newline has no line after it. Without this, the text would end in a blank line.
+        if lines.count > 1, lines.last?.isEmpty == true { lines.removeLast() }
+        for rawLine in lines {
             // Progress bars redraw with \r; keep only what was drawn last.
             let line = rawLine.split(separator: "\r", omittingEmptySubsequences: false).last(where: { !$0.isEmpty }) ?? ""
             var segment = ""
@@ -107,9 +110,15 @@ enum ANSI {
                         guard end < line.endIndex else { index = line.endIndex; continue }
                         if line[end] == "m" {
                             flush()
+                            // Colon form (38:2:255:0:0, 4:3) carries its own sub-parameters: keep the first number,
+                            // and drop colors entirely, since their values are not the next codes.
                             let codes = line[line.index(after: next)..<end].split(separator: ";", omittingEmptySubsequences: false)
-                                .map { Int($0) ?? 0 }
-                            apply(codes.isEmpty ? [0] : codes, color: &color, bold: &bold, dim: &dim)
+                                .compactMap { param -> Int? in
+                                    guard param.contains(":") else { return Int(param) ?? 0 }
+                                    let first = param.split(separator: ":").first.flatMap { Int($0) } ?? 0
+                                    return [38, 48, 58].contains(first) ? nil : first
+                                }
+                            apply(codes, color: &color, bold: &bold, dim: &dim)
                         }
                         index = line.index(after: end)
                     case "]", "P", "_", "^":
@@ -171,7 +180,7 @@ enum ANSI {
 
 /// The log text, in a native text view: selectable, and quick with long output. New output is appended, so a
 /// selection survives, and the view follows the end only while you are at the end.
-private struct LogTextView: NSViewRepresentable {
+struct LogTextView: NSViewRepresentable {
     let text: NSAttributedString
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -187,6 +196,8 @@ private struct LogTextView: NSViewRepresentable {
             view.textContainerInset = NSSize(width: 8, height: 10)
             view.font = ANSI.font
             view.setAccessibilityLabel("Log output")
+            // TextKit 1 from the start: trimming old lines measures their height through the layout manager.
+            _ = view.layoutManager
         }
         return scroll
     }
@@ -198,12 +209,60 @@ private struct LogTextView: NSViewRepresentable {
         guard current != incoming else { return }
         let visible = scroll.contentView.bounds
         let atEnd = current.isEmpty || visible.maxY >= view.bounds.height - 30
-        if !current.isEmpty, incoming.hasPrefix(current) {
-            let added = NSRange(location: (current as NSString).length, length: (incoming as NSString).length - (current as NSString).length)
-            storage.append(text.attributedSubstring(from: added))
+        let oldLength = (current as NSString).length, newLength = (incoming as NSString).length
+        if let (dropped, kept) = Self.overlap(from: current, to: incoming) {
+            // Edit the text in place instead of replacing it, so a selection survives and, while you read further
+            // up, the text stays where it is: drop lines that left the window, redo a last line that changed, add the rest.
+            var removedHeight: CGFloat = 0
+            if dropped > 0, let layout = view.layoutManager {
+                removedHeight = layout.lineFragmentRect(forGlyphAt: layout.glyphIndexForCharacter(at: dropped), effectiveRange: nil).minY
+            }
+            // NSTextView collapses the selection when its storage changes, so carry it across, shifted.
+            let selection = view.selectedRanges.map(\.rangeValue).compactMap { range -> NSValue? in
+                guard range.length > 0, range.location >= dropped, NSMaxRange(range) <= dropped + kept else { return nil }
+                return NSValue(range: NSRange(location: range.location - dropped, length: range.length))
+            }
+            storage.beginEditing()
+            storage.deleteCharacters(in: NSRange(location: dropped + kept, length: oldLength - dropped - kept))
+            storage.deleteCharacters(in: NSRange(location: 0, length: dropped))
+            storage.append(text.attributedSubstring(from: NSRange(location: kept, length: newLength - kept)))
+            storage.endEditing()
+            if !selection.isEmpty { view.selectedRanges = selection }
+            if removedHeight > 0, !atEnd {
+                let origin = scroll.contentView.bounds.origin
+                scroll.contentView.scroll(to: NSPoint(x: origin.x, y: max(0, origin.y - removedHeight)))
+                scroll.reflectScrolledClipView(scroll.contentView)
+            }
         } else {
             storage.setAttributedString(text)
         }
         if atEnd { view.scrollToEndOfDocument(nil) }
+    }
+
+    /// How `new` continues `old`: the characters that fell off the front of `old` as the tail window moved, and how
+    /// many after them `new` begins with. Only the last line of `old` may differ, as a progress line redraws.
+    /// Nil when the two do not overlap, such as after a restart cleared the log.
+    static func overlap(from old: String, to new: String) -> (dropped: Int, kept: Int)? {
+        let old = old as NSString, new = new as NSString
+        guard old.length > 0, new.length > 0 else { return nil }
+        func continues(at start: Int) -> (dropped: Int, kept: Int)? {
+            var common = 0
+            while start + common < old.length, common < new.length,
+                  old.character(at: start + common) == new.character(at: common) { common += 1 }
+            let rest = old.substring(from: start + common)
+            return rest.dropLast().contains("\n") ? nil : (start, common)
+        }
+        if let growth = continues(at: 0) { return growth }
+        // The first line of the new text, which must also be in the part of the old text that stayed.
+        let newline = new.range(of: "\n")
+        let probe = new.substring(to: min(newline.location == NSNotFound ? new.length : newline.location + 1, 256))
+        var searchFrom = 1
+        while searchFrom < old.length {
+            let found = old.range(of: probe, range: NSRange(location: searchFrom, length: old.length - searchFrom))
+            guard found.location != NSNotFound else { return nil }
+            if let slid = continues(at: found.location) { return slid }
+            searchFrom = found.location + 1
+        }
+        return nil
     }
 }
