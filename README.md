@@ -136,11 +136,11 @@ Right-click any server or prompt for every action in one menu. Right-click the m
 
 ## Light on your Mac
 
-Vibe Kit is written in Swift and asks the kernel directly through `libproc`. It does not run `lsof`, `ps` or `git`, and it keeps no window or web view alive in the background.
+Vibe Kit is written in Swift and asks the kernel directly through `libproc`. It does not run `lsof`, `ps` or `git`, and has no browser engine or background web view.
 
 - While the panel is closed it scans every 4 seconds, with timer leeway so macOS can batch wakeups. Each scan checks new processes and known listeners, with a full sweep every 30 seconds.
 - While the panel is open it scans every 1.5 seconds, so the traces stay live.
-- The panel's views are built when it opens and thrown away when it closes. A few seconds after launch Vibe Kit opens the panel once, invisible and off screen, so the first real open is quick.
+- The panel's live views are built when it opens and released when it closes. An empty hosting view is reused to avoid repeatedly setting up AppKit and SwiftUI. Vibe Kit warms it invisibly after launch, so the first real open is quick. Opening and closing have no animation delay.
 - The status lights animate with Core Animation, which the window server runs on its own. Vibe Kit does no work per frame.
 - Each dev server gets one `GET /` to read its page title and status, not a poll, because frameworks like Next.js compile on every request. If a server does not answer yet, Vibe Kit tries again a few times while the panel is open.
 
@@ -183,7 +183,7 @@ VibeKit --snapshot out.png   # render the panel to a PNG without opening it
 
 ```sh
 swift build                    # debug build
-swift test                     # classifier, parser, project, exit code and prompt tests
+swift test                     # core tests plus native panel layout, focus and lifecycle tests
 swift run VibeKit              # run from the terminal
 ./scripts/screenshots.sh       # render the README images from demo data
 swift scripts/make-icon.swift build   # redraw the app icon (copy build/icon-512.png to assets/icon.png)

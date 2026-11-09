@@ -169,7 +169,9 @@ struct ServerListPage: View {
             footer
         }
         .onAppear {
-            searchFocused = true
+            // The first layout happens before the nonactivating panel becomes key.
+            // Asking for focus in that layout can be silently ignored by AppKit.
+            DispatchQueue.main.async { searchFocused = true }
             query = initial.query
             if let first = store.servers.first(where: { $0.category == .dev }) {
                 if initial.selectFirst { selection = first.id }

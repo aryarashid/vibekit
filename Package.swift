@@ -11,5 +11,6 @@ let package = Package(
         .target(name: "VibeKitCore"),
         .executableTarget(name: "VibeKit", dependencies: ["VibeKitCore"]),
         .testTarget(name: "VibeKitCoreTests", dependencies: ["VibeKitCore"]),
+        .testTarget(name: "VibeKitTests", dependencies: ["VibeKit"]),
     ]
 )

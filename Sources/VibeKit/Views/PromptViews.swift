@@ -73,7 +73,7 @@ struct PromptListPage: View {
             footer
         }
         .onAppear {
-            searchFocused = true
+            DispatchQueue.main.async { searchFocused = true }
             query = initialQuery
             prompts.reloadIfChanged()
             if selectFirst { selection = PromptLibrary.search(prompts.prompts, query: initialQuery).first?.id }

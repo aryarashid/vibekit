@@ -102,6 +102,9 @@ final class StatusLightView: NSView {
         }
         ring.opacity = 0
         dot.shadowOffset = .zero
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(accessibilityOptionsChanged),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
     }
 
     @available(*, unavailable)
@@ -127,6 +130,10 @@ final class StatusLightView: NSView {
         let previous = state
         state = next
         render(next, from: previous)
+    }
+
+    @objc private func accessibilityOptionsChanged() {
+        if let state { render(state, from: state) }
     }
 
     private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
@@ -170,6 +177,7 @@ final class StatusLightView: NSView {
 
         dot.removeAnimation(forKey: "breathe")
         ring.removeAnimation(forKey: "ripple")
+        ring.removeAnimation(forKey: "ready")
         guard !reduceMotion else { return }
 
         switch state {
