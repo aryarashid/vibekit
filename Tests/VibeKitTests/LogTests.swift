@@ -39,11 +39,25 @@ final class LogTests: XCTestCase {
         // The window moved: line 1 fell off, and the progress line was redrawn.
         let slid = LogTextView.overlap(from: old, to: "line 2\nprogress 100%\nline 3\n")
         XCTAssertEqual(slid?.dropped, 7)
-        XCTAssertEqual(slid?.kept, 16)
-        // Plain growth keeps everything.
-        XCTAssertEqual(LogTextView.overlap(from: "a\nb\n", to: "a\nb\nc\n")?.kept, 4)
+        XCTAssertEqual(slid?.kept, 7)
+        // Plain growth keeps everything before the last line, which may still change.
+        XCTAssertEqual(LogTextView.overlap(from: "a\nb\n", to: "a\nb\nc\n")?.kept, 2)
         // A cleared log is new text.
         XCTAssertNil(LogTextView.overlap(from: old, to: "Waiting for output…"))
+    }
+
+    func testRepetitiveLogsOverlapQuickly() {
+        let old = String(repeating: "polling\n", count: 12_000) + "old tail\n"
+        let grown = old + String(repeating: "other line\n", count: 4_300)
+        let new = String(grown.suffix(98_000))
+        let start = Date()
+        let result = LogTextView.overlap(from: String(old.suffix(96_000)), to: new)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 0.2)
+        if let result {
+            let oldText = String(old.suffix(96_000)) as NSString
+            XCTAssertEqual(oldText.substring(with: NSRange(location: result.dropped, length: result.kept)),
+                           (new as NSString).substring(to: result.kept))
+        }
     }
 
     func testOutputEndingInANewlineHasNoBlankLastLine() {

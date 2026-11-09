@@ -246,27 +246,30 @@ struct LogTextView: NSViewRepresentable {
     }
 
     /// How `new` continues `old`: the characters that fell off the front of `old` as the tail window moved, and how
-    /// many after them `new` begins with. Only the last line of `old` may differ, as a progress line redraws.
-    /// Nil when the two do not overlap, such as after a restart cleared the log.
+    /// many after them `new` begins with. The last line of `old` is never kept, since a progress line redraws.
+    /// Nil when the two do not overlap, such as after a restart cleared the log. Bounded work: a few bulk compares,
+    /// so a log of identical lines cannot stall the main thread.
     static func overlap(from old: String, to new: String) -> (dropped: Int, kept: Int)? {
         let old = old as NSString, new = new as NSString
         guard old.length > 0, new.length > 0 else { return nil }
-        func continues(at start: Int) -> (dropped: Int, kept: Int)? {
-            var common = 0
-            while start + common < old.length, common < new.length,
-                  old.character(at: start + common) == new.character(at: common) { common += 1 }
-            let rest = old.substring(from: start + common)
-            return rest.dropLast().contains("\n") ? nil : (start, common)
-        }
-        if let growth = continues(at: 0) { return growth }
-        // The first line of the new text, which must also be in the part of the old text that stayed.
-        let newline = new.range(of: "\n")
-        let probe = new.substring(to: min(newline.location == NSNotFound ? new.length : newline.location + 1, 256))
-        var searchFrom = 1
-        while searchFrom < old.length {
-            let found = old.range(of: probe, range: NSRange(location: searchFrom, length: old.length - searchFrom))
+        // Everything before the last line.
+        let trimmed = old.hasSuffix("\n") ? old.length - 1 : old.length
+        let lastBreak = old.range(of: "\n", options: .backwards, range: NSRange(location: 0, length: trimmed))
+        guard lastBreak.location != NSNotFound else { return nil }
+        let body = old.substring(to: lastBreak.location + 1) as NSString
+        if new.hasPrefix(body as String) { return (0, body.length) }
+        // The end of the body is in the new text if the window slid. Find it there, then check the whole overlap once.
+        let anchorLength = min(512, body.length / 2)
+        guard anchorLength > 0 else { return nil }
+        let anchor = body.substring(from: body.length - anchorLength)
+        var searchFrom = 0
+        for _ in 0..<4 {
+            guard searchFrom < new.length else { return nil }
+            let found = new.range(of: anchor, range: NSRange(location: searchFrom, length: new.length - searchFrom))
             guard found.location != NSNotFound else { return nil }
-            if let slid = continues(at: found.location) { return slid }
+            let kept = NSMaxRange(found)
+            let dropped = body.length - kept
+            if dropped > 0, body.substring(from: dropped) == new.substring(to: kept) { return (dropped, kept) }
             searchFrom = found.location + 1
         }
         return nil
