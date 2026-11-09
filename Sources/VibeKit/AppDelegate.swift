@@ -1,3 +1,4 @@
+import Carbon.HIToolbox
 import AppKit
 import SwiftUI
 
@@ -34,6 +35,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `VibeKit --toggle` opens or closes the panel of the running copy, for scripts and launchers.
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(toggleRequested), name: AppDelegate.toggleNotification, object: nil)
+        // The shortcuts follow the letters V and P, so register them again when the keyboard layout changes.
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(keyboardLayoutChanged),
+            name: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil)
         // Services › Add to Vibe Kit, in the right-click menu of selected text in any app.
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
@@ -75,6 +80,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+
+    @objc private func keyboardLayoutChanged() { applyHotKey() }
 
     private func applyHotKey() {
         var taken: Set<String> = []

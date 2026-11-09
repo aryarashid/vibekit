@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon.HIToolbox
 import Observation
 import VibeKitCore
 
@@ -43,6 +44,8 @@ final class PromptStore {
             prompts = try PromptLibrary.load(from: file)
             unreadable = false
             problem = nil
+            // A hand-written entry with no id gets a new one on every read. Save once, so the ids stay put.
+            if PromptLibrary.hasMissingIDs(at: file) { save() }
         } catch {
             // Keep what was last read, and leave the file alone until it reads again.
             unreadable = true
@@ -149,7 +152,7 @@ final class PromptStore {
     /// Sends ⌘V to the app in front. Call after the panel is gone, so the keystroke reaches that app.
     static func pasteIntoFrontApp() {
         let source = CGEventSource(stateID: .combinedSessionState)
-        let v = CGKeyCode(9) // kVK_ANSI_V
+        let v = CGKeyCode(KeyLayout.keyCode(for: "v", fallback: kVK_ANSI_V))
         let down = CGEvent(keyboardEventSource: source, virtualKey: v, keyDown: true)
         let up = CGEvent(keyboardEventSource: source, virtualKey: v, keyDown: false)
         down?.flags = .maskCommand

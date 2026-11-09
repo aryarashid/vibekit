@@ -112,6 +112,13 @@ public enum PromptLibrary {
         return try decoder.decode([Prompt].self, from: data)
     }
 
+    /// True when an entry in the file has no id, as in one written by hand.
+    public static func hasMissingIDs(at url: URL) -> Bool {
+        struct Entry: Decodable { let id: UUID? }
+        guard let data = try? Data(contentsOf: url), let entries = try? JSONDecoder().decode([Entry].self, from: data) else { return false }
+        return entries.contains { $0.id == nil }
+    }
+
     public static func save(_ prompts: [Prompt], to link: URL) throws {
         // A prompts.json kept in a dotfiles repo is often a symlink. Write to its target, so the link survives.
         let url = link.resolvingSymlinksInPath()

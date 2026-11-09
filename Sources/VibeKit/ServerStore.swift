@@ -493,7 +493,7 @@ final class ServerStore {
         let recent = RecentServer(server, launch: launch, reason: reason, log: log)
         if log != nil, reason == .exited {
             recentPids[server.rootPid] = recent.id
-            if recentPids.count > 32 { recentPids.removeAll() }
+            if recentPids.count > 32, let old = recentPids.keys.first(where: { $0 != server.rootPid }) { recentPids[old] = nil }
         }
         add(recent)
     }
@@ -535,7 +535,7 @@ final class ServerStore {
             saveRecents()
         } else if recentID == nil {
             exitCodes[pid] = code
-            if exitCodes.count > 32 { exitCodes.removeAll() }
+            if exitCodes.count > 32, let old = exitCodes.keys.first(where: { $0 != pid }) { exitCodes[old] = nil }
         }
     }
 

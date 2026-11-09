@@ -9,10 +9,11 @@ final class HotKey {
         /// Control-Option-Command-P: the panel, on Prompts.
         case prompts = 2
 
-        var code: Int {
+        /// The key that types V or P on the current layout.
+        @MainActor var code: Int {
             switch self {
-            case .panel: kVK_ANSI_V
-            case .prompts: kVK_ANSI_P
+            case .panel: KeyLayout.keyCode(for: "v", fallback: kVK_ANSI_V)
+            case .prompts: KeyLayout.keyCode(for: "p", fallback: kVK_ANSI_P)
             }
         }
     }
