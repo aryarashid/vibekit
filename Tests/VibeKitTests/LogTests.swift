@@ -72,6 +72,16 @@ final class LogTests: XCTestCase {
         XCTAssertEqual(result?.kept, 2_995 * 8)
     }
 
+    func testADistinctLineAmongRepeatsKeepsThePlaceAfterALongSlide() {
+        func polling(_ n: Int) -> String { String(repeating: "GET /api/health 200\n", count: n) }
+        let old = polling(100) + "compiled in 120 ms\n" + polling(500)
+        let new = polling(50) + "compiled in 120 ms\n" + polling(550)  // 50 lines slid off.
+        let start = Date()
+        let result = LogTextView.overlap(from: old, to: new)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 0.2)
+        XCTAssertEqual(result?.dropped, 50 * 20)
+    }
+
     func testOutputEndingInANewlineHasNoBlankLastLine() {
         XCTAssertEqual(String(ANSI.render("a\nb\n").characters), "a\nb\n")
     }

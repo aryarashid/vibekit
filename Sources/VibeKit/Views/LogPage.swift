@@ -258,7 +258,10 @@ struct LogTextView: NSViewRepresentable {
         guard lastBreak.location != NSNotFound else { return nil }
         let body = old.substring(to: lastBreak.location + 1) as NSString
         if new.hasPrefix(body as String) { return (0, body.length) }
-        // The end of the body is in the new text if the window slid. Find it there, then check the whole overlap once.
+        // A line that appears once in each text pins down how far the window slid, however much output repeats.
+        if let aligned = alignOnUniqueLine(body, new) { return aligned }
+        // Every line repeats, as in a stream of identical health checks. Then any overlap of the same text is right;
+        // find the end of the body in the new text and check the whole overlap once.
         let anchorLength = min(512, body.length / 2)
         guard anchorLength > 0 else { return nil }
         let anchor = body.substring(from: body.length - anchorLength)
@@ -273,6 +276,37 @@ struct LogTextView: NSViewRepresentable {
             let dropped = body.length - kept
             if body.substring(from: dropped) == new.substring(to: kept) { return (dropped, kept) }
             searchEnd = kept - 1
+        }
+        return nil
+    }
+
+    /// The overlap found through a line that occurs exactly once in `body` and once in `new`, tried from the end of
+    /// `body`, where the kept part is. Linear: one pass to count lines in each text, then one compare per try.
+    private static func alignOnUniqueLine(_ body: NSString, _ new: NSString) -> (dropped: Int, kept: Int)? {
+        func lines(_ s: NSString) -> [(start: Int, text: String)] {
+            var result: [(Int, String)] = []
+            var start = 0
+            while start < s.length {
+                let newline = s.range(of: "\n", range: NSRange(location: start, length: s.length - start))
+                let end = newline.location == NSNotFound ? s.length : newline.location + 1
+                result.append((start, s.substring(with: NSRange(location: start, length: end - start))))
+                start = end
+            }
+            return result
+        }
+        let bodyLines = lines(body), newLines = lines(new)
+        var bodyCounts: [String: Int] = [:]
+        for line in bodyLines { bodyCounts[line.text, default: 0] += 1 }
+        var newPlaces: [String: (count: Int, start: Int)] = [:]
+        for line in newLines { newPlaces[line.text, default: (0, line.start)].count += 1 }
+        var tries = 0
+        for line in bodyLines.reversed() where bodyCounts[line.text] == 1 {
+            guard let place = newPlaces[line.text], place.count == 1 else { continue }
+            let dropped = line.start - place.start
+            let kept = body.length - dropped
+            if dropped > 0, kept <= new.length, body.substring(from: dropped) == new.substring(to: kept) { return (dropped, kept) }
+            tries += 1
+            if tries == 3 { return nil }
         }
         return nil
     }
