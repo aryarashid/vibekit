@@ -318,8 +318,10 @@ struct PromptListPage: View {
             Button("") { if let selected { route = .prompt(selected.id) } }.keyboardShortcut("e", modifiers: .command)
             Button("") { if let selected { prompts.togglePin(selected) } }.keyboardShortcut("p", modifiers: .command)
             Button("") { if let selected { copyOnly(selected) } }.keyboardShortcut("c", modifiers: [.command, .shift])
-            // While you type, ⌘⌫ deletes to the start of the line, as in any text field.
-            Button("") { if let selected { prompts.delete(selected) } }.keyboardShortcut(.delete, modifiers: .command)
+            // While you type, ⌘⌫ deletes to the start of the line, as in any text field. It deletes only a prompt
+            // you picked, never the fallback, so pressing it once more after the search clears deletes nothing.
+            Button("") { if let picked = list.first(where: { $0.id == selection }) { prompts.delete(picked) } }
+                .keyboardShortcut(.delete, modifiers: .command)
                 .disabled(!query.isEmpty)
             Button("") { route = .settings }.keyboardShortcut(",", modifiers: .command)
             ForEach(1..<10) { number in

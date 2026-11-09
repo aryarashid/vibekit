@@ -470,10 +470,15 @@ struct ServerListPage: View {
             guard let active, case .server(let s)? = items.first(where: { $0.id == active }) else { return nil }
             return s
         }()
+        let picked: Server? = {
+            guard let selection, case .server(let s)? = items.first(where: { $0.id == selection }) else { return nil }
+            return s
+        }()
         return ZStack {
             Button("") { if let server { store.restart(server) } }.keyboardShortcut("r", modifiers: .command)
-            // While you type, ⌘⌫ deletes to the start of the line, as in any text field.
-            Button("") { if let server { store.stop(server) } }.keyboardShortcut(.delete, modifiers: .command)
+            // While you type, ⌘⌫ deletes to the start of the line, as in any text field. It stops only a row you
+            // picked, never the fallback, so pressing it once more after the search clears stops nothing.
+            Button("") { if let picked { store.stop(picked) } }.keyboardShortcut(.delete, modifiers: .command)
                 .disabled(!query.isEmpty)
             Button("") { if let server { store.copyURL(server) } }.keyboardShortcut("c", modifiers: [.command, .shift])
             Button("") { if let server { store.openInEditor(server); close() } }.keyboardShortcut("o", modifiers: .command)
