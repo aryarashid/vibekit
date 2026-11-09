@@ -53,11 +53,23 @@ final class LogTests: XCTestCase {
         let start = Date()
         let result = LogTextView.overlap(from: String(old.suffix(96_000)), to: new)
         XCTAssertLessThan(Date().timeIntervalSince(start), 0.2)
+        // Only what really slid off is dropped, not most of the repeated text.
+        XCTAssertNotNil(result)
+        XCTAssertLessThan(result?.dropped ?? .max, 49_000)
         if let result {
             let oldText = String(old.suffix(96_000)) as NSString
             XCTAssertEqual(oldText.substring(with: NSRange(location: result.dropped, length: result.kept)),
                            (new as NSString).substring(to: result.kept))
         }
+    }
+
+    func testRepeatedLinesKeepTheLongestOverlap() {
+        let old = String(repeating: "polling\n", count: 3_000)
+        let new = String(repeating: "polling\n", count: 2_995) + "ready\n"
+        // The last old line is always redone, so of the 2,999 lines before it, 4 slid off and 2,995 are kept.
+        let result = LogTextView.overlap(from: old, to: new)
+        XCTAssertEqual(result?.dropped, 4 * 8)
+        XCTAssertEqual(result?.kept, 2_995 * 8)
     }
 
     func testOutputEndingInANewlineHasNoBlankLastLine() {

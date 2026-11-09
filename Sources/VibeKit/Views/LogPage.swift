@@ -262,15 +262,17 @@ struct LogTextView: NSViewRepresentable {
         let anchorLength = min(512, body.length / 2)
         guard anchorLength > 0 else { return nil }
         let anchor = body.substring(from: body.length - anchorLength)
-        var searchFrom = 0
+        // From the right, so the longest overlap wins: with repeated lines, an earlier hit also matches but would
+        // drop most of the text, and with it your place and selection.
+        var searchEnd = min(new.length, body.length - 1)
         for _ in 0..<4 {
-            guard searchFrom < new.length else { return nil }
-            let found = new.range(of: anchor, range: NSRange(location: searchFrom, length: new.length - searchFrom))
+            guard searchEnd >= anchorLength else { return nil }
+            let found = new.range(of: anchor, options: .backwards, range: NSRange(location: 0, length: searchEnd))
             guard found.location != NSNotFound else { return nil }
             let kept = NSMaxRange(found)
             let dropped = body.length - kept
-            if dropped > 0, body.substring(from: dropped) == new.substring(to: kept) { return (dropped, kept) }
-            searchFrom = found.location + 1
+            if body.substring(from: dropped) == new.substring(to: kept) { return (dropped, kept) }
+            searchEnd = kept - 1
         }
         return nil
     }
