@@ -87,13 +87,11 @@ The panel's second tab keeps the prompts you send to coding agents again and aga
 
 ### Download
 
-1. Download `Vibe-Kit.zip` from the [latest release](https://github.com/aryarashid/vibekit/releases/latest) and unzip it.
-2. Move **Vibe Kit** to your Applications folder and open it.
-3. The build is not notarized, so the first time macOS will say it cannot check the app. Open **System Settings → Privacy & Security**, scroll down and click **Open Anyway**. Or run this once:
+1. Download `Vibe-Kit.dmg` from the [latest release](https://github.com/aryarashid/vibekit/releases/latest) and open it.
+2. Drag **Vibe Kit** onto **Applications**.
+3. Open it from Applications. Look for the **V** in the menu bar.
 
-   ```sh
-   xattr -dr com.apple.quarantine "/Applications/Vibe Kit.app"
-   ```
+The app is signed with a Developer ID and notarized by Apple, so it opens without a warning. It runs on Apple silicon and Intel, on macOS 14 or later.
 
 ### Build from source
 
@@ -107,7 +105,9 @@ cd vibekit
 
 The script builds a release binary, wraps it in `Vibe Kit.app`, signs it ad hoc, copies it to `/Applications` (or `~/Applications`) and starts it. To build without installing, run `./scripts/build-app.sh`. Set `UNIVERSAL=1` for a binary that runs on Apple silicon and Intel.
 
-On first run Vibe Kit turns on Launch at Login. Turn it off in Settings, or from the menu bar icon's right-click menu.
+To build a signed and notarized `Vibe-Kit.dmg` for a release, run `VERSION=x.y.z ./scripts/release.sh`. It needs a Developer ID Application certificate and App Store Connect API credentials, described at the top of the script.
+
+The first time it runs from Applications, Vibe Kit turns on Launch at Login. Turn it off in Settings, or from the menu bar icon's right-click menu.
 
 To uninstall, quit Vibe Kit and delete the app. It keeps a little state and your prompts in `~/Library/Application Support/VibeKit` and the logs of servers it started in `~/Library/Logs/VibeKit`.
 
