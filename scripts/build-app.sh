@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="${VERSION:-1.2.0}"
+VERSION="${VERSION:-1.3.0}"
 BUILD="${BUILD:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
 APP="build/Vibe Kit.app"
 
@@ -24,6 +24,11 @@ cp "$BIN_DIR/VibeKit" "$APP/Contents/MacOS/VibeKit"
 cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" Resources/Info.plist > "$APP/Contents/Info.plist"
 
-# Ad-hoc signature. Fine for running locally; a release would use a Developer ID and notarization.
-codesign --force --sign - "$APP"
+# Ad hoc signature by default, which is fine for running locally. scripts/release.sh sets
+# SIGN_IDENTITY to a Developer ID and adds the hardened runtime and a timestamp for notarization.
+if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+  codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp "$APP"
+else
+  codesign --force --sign - "$APP"
+fi
 echo "Built $APP ($VERSION, build $BUILD)"

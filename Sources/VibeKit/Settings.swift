@@ -48,10 +48,17 @@ final class Settings {
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
-    /// Turn on launch at login the first time the app runs from /Applications.
+    /// Turn on launch at login the first time the app runs from where it is installed.
     func enableLaunchAtLoginOnFirstRun() {
-        guard !defaults.bool(forKey: "didOfferLaunchAtLogin"), Bundle.main.bundlePath.hasSuffix(".app") else { return }
+        guard !defaults.bool(forKey: "didOfferLaunchAtLogin"), Self.isInstalled(at: Bundle.main.bundlePath) else { return }
         defaults.set(true, forKey: "didOfferLaunchAtLogin")
         setLaunchAtLogin(true)
+    }
+
+    /// False for a copy opened straight from the disk image, or one macOS runs from a randomized
+    /// read-only path because it was not moved out of Downloads. A login item would point at a copy
+    /// that goes away, so wait until the app runs from Applications.
+    nonisolated static func isInstalled(at bundlePath: String) -> Bool {
+        bundlePath.hasSuffix(".app") && !bundlePath.hasPrefix("/Volumes/") && !bundlePath.contains("/AppTranslocation/")
     }
 }
