@@ -180,16 +180,20 @@ final class PanelTests: XCTestCase {
             if let savedClipboard { pasteboard.setString(savedClipboard, forType: .string) }
         }
 
-        let (controller, _, name) = fixture()
+        let (controller, store, name) = fixture()
         defer { UserDefaults.standard.removePersistentDomain(forName: name) }
         controller.show(from: nil, tab: .servers)
-        pump(0.1)
         let panel = try XCTUnwrap(NSApp.windows.compactMap { $0 as? Panel }.first { $0.isVisible })
+        // Wait for the full demo list to render and focus the search field before filtering;
+        // otherwise the initial 200pt height would satisfy the `< 300` check before the filter runs.
+        let openDeadline = Date().addingTimeInterval(3)
+        while (panel.frame.height <= 400 || !(panel.firstResponder is NSTextView)) && Date() < openDeadline { pump(0.01) }
+        XCTAssertGreaterThan(panel.frame.height, 400)
         let editor = try XCTUnwrap(panel.firstResponder as? NSTextView)
         editor.insertText("3000", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
         // Wait for SwiftUI to apply the filter so the single match (port 3000) becomes active.
-        let deadline = Date().addingTimeInterval(2)
-        while panel.frame.height >= 300 && Date() < deadline { pump(0.01) }
+        let filterDeadline = Date().addingTimeInterval(3)
+        while panel.frame.height >= 300 && Date() < filterDeadline { pump(0.01) }
         XCTAssertLessThan(panel.frame.height, 300)
 
         func key(_ chars: String, unmodified: String? = nil, keyCode: UInt16, flags: NSEvent.ModifierFlags) -> NSEvent {
@@ -205,6 +209,7 @@ final class PanelTests: XCTestCase {
         // ⇧⌘C still reaches the server's Copy URL shortcut instead of Edit › Copy.
         XCTAssertTrue(panel.performKeyEquivalent(with: key("c", unmodified: "C", keyCode: 8, flags: [.command, .shift])))
         XCTAssertEqual(pasteboard.string(forType: .string), "http://localhost:3000")
+        XCTAssertEqual(store.toast?.message, "Copied http://localhost:3000")
 
         pasteboard.clearContents()
         pasteboard.setString("5173", forType: .string)
