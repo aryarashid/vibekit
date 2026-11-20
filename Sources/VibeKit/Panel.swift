@@ -242,8 +242,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         guard isVisible else { return }
         // Clicking our own status bar button lets its action close the panel cleanly instead of closing on down
         // and reopening on up. An auto-hiding menu bar sliding in also keeps the panel open unless you switched apps.
-        if Self.isPointOnStatusButton(statusButton, at: NSEvent.mouseLocation)
-            || (Self.pointerIsInMenuBar() && NSWorkspace.shared.frontmostApplication == frontApp) {
+        if NSWorkspace.shared.frontmostApplication == frontApp
+            && (Self.isPointOnStatusButton(statusButton, at: NSEvent.mouseLocation) || Self.pointerIsInMenuBar()) {
             watchMenuBar(front: frontApp)
         } else {
             close()
