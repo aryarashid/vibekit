@@ -129,6 +129,7 @@ final class ServerStore {
     /// Environments of servers stopped this session. Memory only, never written to disk.
     @ObservationIgnored private var recentEnvironments: [String: [String]] = [:]
     @ObservationIgnored private var shellEnvironment: [String]?
+    @ObservationIgnored private var shellEnvironmentTask: Task<[String], Never>?
     @ObservationIgnored private var toastTask: Task<Void, Never>?
     @ObservationIgnored private var lastCount = -1
     /// Recently stopped servers that Vibe Kit started, by PID, until their exit code arrives.
@@ -218,8 +219,7 @@ final class ServerStore {
     private func apply(_ scanned: [Server]) {
         guard !isDemo else { return }
         let sorted = scanned.sorted { a, b in
-            let order: [ServerCategory] = [.dev, .database, .service, .other]
-            if a.category != b.category { return order.firstIndex(of: a.category)! < order.firstIndex(of: b.category)! }
+            if a.category != b.category { return a.category.sortOrder < b.category.sortOrder }
             let byTitle = a.title.localizedStandardCompare(b.title)
             if byTitle != .orderedSame { return byTitle == .orderedAscending }
             return a.primaryPort < b.primaryPort
@@ -286,6 +286,15 @@ final class ServerStore {
         for (pid, fd) in stdinWriters where !sorted.contains(where: { $0.rootPid == pid }) && !ProcessControl.isAlive(pid) {
             close(fd)
             stdinWriters[pid] = nil
+        }
+        // Drop finished managed entries now that `remember` has copied any log onto Recently Stopped.
+        let liveManaged = managed.filter { key, process in
+            ids.contains(key) || (ProcessControl.isAlive(process.pid)
+                && LibProc.startDate(process.pid).map { abs($0.timeIntervalSince(process.started)) < 1 } == true)
+        }
+        if liveManaged.count != managed.count {
+            managed = liveManaged
+            saveManaged()
         }
 
         if sorted != servers { servers = sorted }
@@ -373,6 +382,7 @@ final class ServerStore {
             if result == .failed {
                 pending[server.id] = nil
                 show(Toast(message: "Could not stop \(server.title)", isError: true))
+                schedule()
             }
             scanNow()
         }
@@ -407,6 +417,7 @@ final class ServerStore {
             guard result != .failed else {
                 pending[server.id] = nil
                 show(Toast(message: "Could not stop \(server.title)", isError: true))
+                schedule()
                 return
             }
             // Give the kernel a moment to release the port.
@@ -444,8 +455,7 @@ final class ServerStore {
         Task {
             var env = environment
             if env == nil {
-                if shellEnvironment == nil { shellEnvironment = await ShellEnvironment.load() }
-                env = shellEnvironment
+                env = await loadShellEnvironment()
                 // Force Quit while the shell environment loaded means you want it gone, not back.
                 guard pending[pendingID] == state else { return }
             }
@@ -480,12 +490,28 @@ final class ServerStore {
         }
     }
 
+    private func loadShellEnvironment() async -> [String] {
+        if let shellEnvironment { return shellEnvironment }
+        let task = shellEnvironmentTask ?? {
+            let created = Task { await ShellEnvironment.load() }
+            shellEnvironmentTask = created
+            return created
+        }()
+        let loaded = await task.value
+        shellEnvironment = loaded
+        shellEnvironmentTask = nil
+        return loaded
+    }
+
     /// One log per project folder and port, so two projects with the same name do not share a file.
-    /// The log for a launch. Two servers on one port (IPv4 and IPv6) must not share a file, because opening it for
+    /// Two servers on one port (IPv4 and IPv6) must not share a file, because opening it for
     /// the second would erase the first's output.
     private func freeLogURL(name: String, port: UInt16, directory: String) -> URL {
         let base = Self.logURL(name: name, port: port, directory: directory, in: logsDirectory)
-        let inUse = Set(managed.values.filter { ProcessControl.isAlive($0.pid) && LibProc.startDate($0.pid) == $0.started }.map(\.log))
+        let inUse = Set(managed.values.filter { process in
+            ProcessControl.isAlive(process.pid)
+                && LibProc.startDate(process.pid).map { abs($0.timeIntervalSince(process.started)) < 0.001 } == true
+        }.map(\.log))
         var log = base
         var n = 2
         while inUse.contains(log) {
@@ -536,6 +562,7 @@ final class ServerStore {
 
     /// A server Vibe Kit started has ended. Mark it crashed if it failed, now or once the scan notices it is gone.
     private func processExited(pid: Int32, code: Int32) {
+        if let fd = stdinWriters.removeValue(forKey: pid) { close(fd) }
         let launch = launches.removeValue(forKey: pid)
         let recentID = recentPids.removeValue(forKey: pid)
         // It ended before its server came up, such as a syntax error on restart. Say so now, not after a timeout,

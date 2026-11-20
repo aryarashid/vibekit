@@ -7,6 +7,7 @@ struct ServerDetail: View {
     let store: ServerStore
     let page: PageInfo?
     let onShowLogs: () -> Void
+    let onClose: () -> Void
 
     @State private var showQR = false
 
@@ -52,7 +53,7 @@ struct ServerDetail: View {
             }
             if let folder {
                 line("folder", Format.path(folder) + (server.project?.branch.map { "  ⎇ \($0)" } ?? "")) {
-                    IconButton(symbol: "arrow.up.right", help: "Reveal in Finder", size: 22) { store.reveal(server) }
+                    IconButton(symbol: "arrow.up.right", help: "Reveal in Finder", size: 22) { store.reveal(server); onClose() }
                 }
             }
             line("terminal", server.command, mono: true, lines: 3) {
@@ -63,10 +64,10 @@ struct ServerDetail: View {
             HStack(spacing: 6) {
                 if folder != nil {
                     if let editor {
-                        PillButton(title: editor.name, image: editor.icon) { store.openInEditor(server) }
+                        PillButton(title: editor.name, image: editor.icon) { store.openInEditor(server); onClose() }
                     }
                     if let terminal {
-                        PillButton(title: terminal.name, image: terminal.icon) { store.openInTerminal(server) }
+                        PillButton(title: terminal.name, image: terminal.icon) { store.openInTerminal(server); onClose() }
                     }
                 }
                 if store.logURL(for: server) != nil {

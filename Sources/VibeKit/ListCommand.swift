@@ -10,7 +10,7 @@ enum ListCommand {
         usleep(300_000)
         let servers = scanner.scan(usageFor: Set(ServerCategory.allCases), fullSweep: true)
             .filter { all || $0.category != .other }
-            .sorted { ($0.category.rawValue, $0.primaryPort) < ($1.category.rawValue, $1.primaryPort) }
+            .sorted { ($0.category.sortOrder, $0.primaryPort) < ($1.category.sortOrder, $1.primaryPort) }
 
         if servers.isEmpty {
             print("No dev servers running.")

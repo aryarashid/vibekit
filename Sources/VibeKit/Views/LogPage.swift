@@ -3,26 +3,27 @@ import VibeKitCore
 
 /// Live output of a server Vibe Kit started, with terminal colors.
 struct LogPage: View {
-    let server: Server
-    let store: ServerStore
+    let subtitle: String
+    let url: URL
     let back: () -> Void
     let onHeightChange: (CGFloat) -> Void
 
     @State private var text = NSAttributedString()
 
-    private var url: URL? { store.logURL(for: server) }
+    private struct FileStamp: Equatable {
+        let size: UInt64
+        let modified: Date?
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            PageHeader(title: "Logs", subtitle: "\(server.title) · \(server.primaryPort)", back: back) {
-                if let url {
-                    IconButton(symbol: "arrow.up.forward.app", help: "Open in Console") {
-                        NSWorkspace.shared.open([url], withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Console.app"),
-                                                configuration: NSWorkspace.OpenConfiguration())
-                    }
-                    IconButton(symbol: "folder", help: "Reveal log file") {
-                        NSWorkspace.shared.activateFileViewerSelecting([url])
-                    }
+            PageHeader(title: "Logs", subtitle: subtitle, back: back) {
+                IconButton(symbol: "arrow.up.forward.app", help: "Open in Console") {
+                    NSWorkspace.shared.open([url], withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Console.app"),
+                                            configuration: NSWorkspace.OpenConfiguration())
+                }
+                IconButton(symbol: "folder", help: "Reveal log file") {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
                 }
             }
             Divider().opacity(0.6)
@@ -30,17 +31,18 @@ struct LogPage: View {
         }
         .onAppear { onHeightChange(PanelMetrics.maxHeight) }
         .task(id: url) {
-            guard let url else { return }
-            var lastSize: UInt64 = .max
+            var lastStamp: FileStamp?
             while !Task.isCancelled {
-                let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? UInt64) ?? 0
-                if size != lastSize {
-                    lastSize = size
-                    let rendered = await Task.detached(priority: .utility) {
-                        ANSI.render(Self.tail(of: url, bytes: 96 * 1024))
+                let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+                let stamp = FileStamp(size: (attrs?[.size] as? UInt64) ?? 0, modified: attrs?[.modificationDate] as? Date)
+                if stamp != lastStamp {
+                    lastStamp = stamp
+                    let url = url
+                    let runs = await Task.detached(priority: .utility) {
+                        ANSI.parse(Self.tail(of: url, bytes: 96 * 1024))
                     }.value
                     guard !Task.isCancelled else { return }
-                    text = NSAttributedString(rendered)
+                    text = ANSI.attributed(runs)
                 }
                 try? await Task.sleep(for: .milliseconds(600))
             }
@@ -56,7 +58,10 @@ struct LogPage: View {
         try? handle.seek(toOffset: start)
         let data = (try? handle.read(upToCount: bytes)) ?? Data()
         var string = String(decoding: data, as: UTF8.self)
-        if start > 0, let newline = string.firstIndex(of: "\n") { string = String(string[string.index(after: newline)...]) }
+        if start > 0, let newline = string.firstIndex(of: "\n") {
+            let after = string[string.index(after: newline)...]
+            if !after.isEmpty { string = String(after) }
+        }
         return string.isEmpty ? "Waiting for output…" : string
     }
 }
@@ -64,18 +69,57 @@ struct LogPage: View {
 /// Turns terminal output into styled text: SGR colors and bold, carriage-return progress lines collapsed,
 /// and every other escape sequence dropped.
 enum ANSI {
-    // Fonts and paragraph styles are immutable, so sharing them across threads is safe.
-    nonisolated(unsafe) static let font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
-    nonisolated(unsafe) static let boldFont = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .bold)
-    nonisolated(unsafe) private static let paragraph: NSParagraphStyle = {
+    enum Tone: Equatable, Sendable {
+        case muted, red, green, yellow, blue, purple, teal
+
+        @MainActor var color: NSColor {
+            switch self {
+            case .muted: .secondaryLabelColor
+            case .red: .systemRed
+            case .green: .systemGreen
+            case .yellow: .systemYellow
+            case .blue: .systemBlue
+            case .purple: .systemPurple
+            case .teal: .systemTeal
+            }
+        }
+    }
+
+    struct Run: Equatable, Sendable {
+        let text: String
+        let tone: Tone?
+        let bold: Bool
+        let dim: Bool
+    }
+
+    @MainActor static let font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
+    @MainActor static let boldFont = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .bold)
+    @MainActor private static let paragraph: NSParagraphStyle = {
         let style = NSMutableParagraphStyle()
         style.lineSpacing = 1.5
         return style
     }()
 
-    static func render(_ input: String) -> AttributedString {
-        var result = AttributedString()
-        var color: NSColor?
+    @MainActor static func render(_ input: String) -> NSAttributedString {
+        attributed(parse(input))
+    }
+
+    @MainActor static func attributed(_ runs: [Run]) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        for run in runs {
+            let color = run.tone?.color ?? (run.dim ? .secondaryLabelColor : .labelColor)
+            result.append(NSAttributedString(string: run.text, attributes: [
+                .font: run.bold ? boldFont : font,
+                .paragraphStyle: paragraph,
+                .foregroundColor: color,
+            ]))
+        }
+        return result
+    }
+
+    static func parse(_ input: String) -> [Run] {
+        var result: [Run] = []
+        var tone: Tone?
         var bold = false
         var dim = false
 
@@ -90,11 +134,7 @@ enum ANSI {
 
             func flush() {
                 guard !segment.isEmpty else { return }
-                var piece = AttributedString(segment)
-                piece.appKit.font = bold ? boldFont : font
-                piece.appKit.paragraphStyle = paragraph
-                piece.appKit.foregroundColor = color ?? (dim ? .secondaryLabelColor : .labelColor)
-                result.append(piece)
+                result.append(Run(text: segment, tone: tone, bold: bold, dim: dim))
                 segment = ""
             }
 
@@ -106,7 +146,10 @@ enum ANSI {
                     switch line[next] {
                     case "[":
                         var end = line.index(after: next)
-                        while end < line.endIndex, !(line[end].isLetter || line[end] == "~") { end = line.index(after: end) }
+                        // ECMA-48 CSI final bytes span 0x40 ('@') through 0x7E ('~').
+                        while end < line.endIndex, !(line[end].asciiValue.map({ $0 >= 0x40 && $0 <= 0x7E }) ?? false) {
+                            end = line.index(after: end)
+                        }
                         guard end < line.endIndex else { index = line.endIndex; continue }
                         if line[end] == "m" {
                             flush()
@@ -118,7 +161,7 @@ enum ANSI {
                                     let first = param.split(separator: ":").first.flatMap { Int($0) } ?? 0
                                     return [38, 48, 58].contains(first) ? nil : first
                                 }
-                            apply(codes, color: &color, bold: &bold, dim: &dim)
+                            apply(codes, tone: &tone, bold: &bold, dim: &dim)
                         }
                         index = line.index(after: end)
                     case "]", "P", "_", "^":
@@ -150,23 +193,23 @@ enum ANSI {
         return result
     }
 
-    private static func apply(_ codes: [Int], color: inout NSColor?, bold: inout Bool, dim: inout Bool) {
+    private static func apply(_ codes: [Int], tone: inout Tone?, bold: inout Bool, dim: inout Bool) {
         var i = 0
         while i < codes.count {
             let code = codes[i]
             switch code {
-            case 0: color = nil; bold = false; dim = false
+            case 0: tone = nil; bold = false; dim = false
             case 1: bold = true
             case 2: dim = true
             case 22: bold = false; dim = false
-            case 30, 90: color = .secondaryLabelColor
-            case 31, 91: color = .systemRed
-            case 32, 92: color = .systemGreen
-            case 33, 93: color = .systemYellow
-            case 34, 94: color = .systemBlue
-            case 35, 95: color = .systemPurple
-            case 36, 96: color = .systemTeal
-            case 37, 97, 39: color = nil
+            case 30, 90: tone = .muted
+            case 31, 91: tone = .red
+            case 32, 92: tone = .green
+            case 33, 93: tone = .yellow
+            case 34, 94: tone = .blue
+            case 35, 95: tone = .purple
+            case 36, 96: tone = .teal
+            case 37, 97, 39: tone = nil
             case 38, 48, 58:
                 // 256-color and truecolor foreground, background and underline: skip their parameters.
                 // Foreground keeps the default color; backgrounds are not drawn.
@@ -215,7 +258,11 @@ struct LogTextView: NSViewRepresentable {
             // up, the text stays where it is: drop lines that left the window, redo a last line that changed, add the rest.
             var removedHeight: CGFloat = 0
             if dropped > 0, let layout = view.layoutManager {
-                removedHeight = layout.lineFragmentRect(forGlyphAt: layout.glyphIndexForCharacter(at: dropped), effectiveRange: nil).minY
+                layout.ensureLayout(forCharacterRange: NSRange(location: 0, length: dropped))
+                let glyph = layout.glyphIndexForCharacter(at: dropped)
+                if glyph < layout.numberOfGlyphs {
+                    removedHeight = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY
+                }
             }
             // NSTextView collapses the selection when its storage changes, so carry it across, shifted.
             let selection = view.selectedRanges.map(\.rangeValue).compactMap { range -> NSValue? in
@@ -248,7 +295,7 @@ struct LogTextView: NSViewRepresentable {
     /// How `new` continues `old`: the characters that fell off the front of `old` as the tail window moved, and how
     /// many after them `new` begins with. The last line of `old` is never kept, since a progress line redraws.
     /// Nil when the two do not overlap, such as after a restart cleared the log.
-    static func overlap(from old: String, to new: String) -> (dropped: Int, kept: Int)? {
+    nonisolated static func overlap(from old: String, to new: String) -> (dropped: Int, kept: Int)? {
         let old = old as NSString, new = new as NSString
         guard old.length > 0, new.length > 0 else { return nil }
         // Everything before the last line.
@@ -263,7 +310,7 @@ struct LogTextView: NSViewRepresentable {
 
     /// The length of the longest end of `text` that is also the start of `pattern`, in one linear pass
     /// (Knuth–Morris–Pratt). However much output repeats, this finds the real overlap without a stall.
-    static func longestSuffixThatStarts(_ text: [UInt16], _ pattern: [UInt16]) -> Int {
+    nonisolated static func longestSuffixThatStarts(_ text: [UInt16], _ pattern: [UInt16]) -> Int {
         let pattern = pattern.prefix(text.count)
         guard !pattern.isEmpty else { return 0 }
         // failure[i]: the longest proper border of pattern[0...i].

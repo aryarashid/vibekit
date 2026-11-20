@@ -149,7 +149,7 @@ public struct Classifier: Sendable {
             where dir == prefix || dir.hasPrefix(prefix + "/") {
             return false
         }
-        if dir.hasPrefix(home + "/Library") { return false }
+        if dir == home + "/Library" || dir.hasPrefix(home + "/Library/") { return false }
         if dir.hasPrefix(home + "/.") {
             // Hidden folders hold tool state; count them only when they contain a real project.
             return isProject(dir)

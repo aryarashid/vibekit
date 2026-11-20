@@ -106,6 +106,10 @@ struct SettingsPage: View {
                 }
             }
         }
+        .onAppear {
+            settings.refreshLaunchAtLogin()
+            pasteAccess = PromptStore.canPaste
+        }
     }
 
     private func openAccessibilitySettings() {
@@ -153,7 +157,7 @@ struct SettingsPage: View {
             if apps.isEmpty {
                 Text("None found").font(Theme.metaFont).foregroundStyle(.secondary)
             } else {
-                Picker(title, selection: Binding(get: { selection.wrappedValue ?? apps.first?.id }, set: { selection.wrappedValue = $0 })) {
+                Picker(title, selection: Binding(get: { ExternalApp.resolve(selection.wrappedValue, in: apps)?.id }, set: { selection.wrappedValue = $0 })) {
                     ForEach(apps) { app in
                         Text(app.name).tag(Optional(app.id))
                     }

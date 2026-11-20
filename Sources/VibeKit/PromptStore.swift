@@ -13,8 +13,13 @@ final class PromptStore {
     /// Why changes are not reaching the file right now, shown in the panel. Nil when all is saved.
     private(set) var problem: String?
 
+    private struct FileStamp: Equatable {
+        let modified: Date?
+        let size: UInt64?
+    }
+
     @ObservationIgnored private let file: URL
-    @ObservationIgnored private var loadedAt: Date?
+    @ObservationIgnored private var loadedStamp: FileStamp?
     @ObservationIgnored private var undoTask: Task<Void, Never>?
     @ObservationIgnored private let persists: Bool
     /// The file exists but could not be read. Saving now would replace it, so nothing is saved until it reads again.
@@ -36,16 +41,18 @@ final class PromptStore {
     /// Every change calls it first, so a change never writes over an edit made elsewhere.
     func reloadIfChanged() {
         guard persists else { return }
-        let modified = modificationDate()
+        let stamp = currentStamp()
+        if stamp == nil && loadedStamp == nil && !unreadable && prompts.isEmpty { return }
         // A file that failed to read is tried again every time: fixing its permissions does not change its date.
-        guard unreadable || modified == nil || modified != loadedAt else { return }
-        loadedAt = modified
+        guard unreadable || stamp == nil || stamp != loadedStamp else { return }
+        loadedStamp = stamp
         do {
-            prompts = try PromptLibrary.load(from: file)
+            let loaded = try PromptLibrary.load(from: file)
+            if prompts != loaded { prompts = loaded }
             unreadable = false
             problem = nil
             // A hand-written entry with no id gets a new one on every read. Save once, so the ids stay put.
-            if PromptLibrary.hasMissingIDs(at: file) { save() }
+            if stamp != nil, PromptLibrary.hasMissingIDs(at: file) { save() }
         } catch {
             // Keep what was last read, and leave the file alone until it reads again.
             unreadable = true
@@ -103,14 +110,24 @@ final class PromptStore {
         edit(prompt.id) { $0.pinned.toggle() }
     }
 
-    /// Puts the prompt on the clipboard and counts the use.
-    func copy(_ prompt: Prompt) {
+    /// Puts the prompt on the clipboard without changing its order yet.
+    func copyToClipboard(_ prompt: Prompt) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(prompt.text, forType: .string)
-        edit(prompt.id) {
+    }
+
+    /// Counts one use of `id` and saves.
+    func recordUse(_ id: UUID) {
+        edit(id) {
             $0.uses += 1
             $0.lastUsed = Date()
         }
+    }
+
+    /// Puts the prompt on the clipboard and counts the use.
+    func copy(_ prompt: Prompt) {
+        copyToClipboard(prompt)
+        recordUse(prompt.id)
     }
 
     func revealFile() {
@@ -122,7 +139,7 @@ final class PromptStore {
         guard persists, !unreadable else { return }
         do {
             try PromptLibrary.save(prompts, to: file)
-            loadedAt = modificationDate()
+            loadedStamp = currentStamp()
             problem = nil
         } catch {
             problem = "Could not save prompts: \(error.localizedDescription)"
@@ -130,9 +147,12 @@ final class PromptStore {
     }
 
     /// Read fresh every time. `URL.resourceValues` caches on the URL, which hid edits made outside Vibe Kit
-    /// and then let the next save write over them.
-    private func modificationDate() -> Date? {
-        (try? FileManager.default.attributesOfItem(atPath: file.resolvingSymlinksInPath().path))?[.modificationDate] as? Date
+    /// and then let the next save write over them. Include size so same-second edits are caught too.
+    private func currentStamp() -> FileStamp? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: file.resolvingSymlinksInPath().path) else {
+            return nil
+        }
+        return FileStamp(modified: attributes[.modificationDate] as? Date, size: attributes[.size] as? UInt64)
     }
 
     /// Sample prompts for `--snapshot --demo`. Nothing is saved.

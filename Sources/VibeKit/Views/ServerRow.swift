@@ -7,8 +7,10 @@ struct ServerRow: View {
     let isSelected: Bool
     let isExpanded: Bool
     let onHover: () -> Void
+    let onActivate: () -> Void
     let onToggleDetails: () -> Void
     let onShowLogs: (Server) -> Void
+    let onClose: () -> Void
 
     private var pending: Pending? { store.pending[server.id] }
     private var page: PageInfo? { store.pages[server.id] }
@@ -27,10 +29,10 @@ struct ServerRow: View {
             .padding(.horizontal, 10)
             .frame(height: 48)
             .contentShape(Rectangle())
-            .onTapGesture { primaryAction() }
+            .onTapGesture(perform: onActivate)
 
             if isExpanded {
-                ServerDetail(server: server, store: store, page: page, onShowLogs: { onShowLogs(server) })
+                ServerDetail(server: server, store: store, page: page, onShowLogs: { onShowLogs(server) }, onClose: onClose)
                     .transition(.opacity)
             }
         }
@@ -49,15 +51,18 @@ struct ServerRow: View {
         .opacity(pending == .stopping ? 0.4 : 1)
         .animation(.easeOut(duration: 0.15), value: pending)
         .onHover { if $0 { onHover() } }
-        .contextMenu { ServerMenu(server: server, store: store, onShowLogs: onShowLogs) }
+        .contextMenu { ServerMenu(server: server, store: store, onShowLogs: onShowLogs, onClose: onClose) }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(server.title), \(server.framework.name), port \(server.primaryPort)")
         .accessibilityValue(accessibilityState)
-        .accessibilityAction(named: "Open") { primaryAction() }
-        .accessibilityAction(named: "Copy URL") { store.copyURL(server) }
-        .accessibilityAction(named: "Restart") { store.restart(server) }
-        .accessibilityAction(named: "Stop") { store.stop(server) }
-        .accessibilityAction(named: isExpanded ? "Hide details" : "Show details") { onToggleDetails() }
+        .accessibilityAction(named: primaryActionTitle, onActivate)
+        .modifier(ServerAccessibilityActions(server: server, store: store, isExpanded: isExpanded, onToggleDetails: onToggleDetails))
+    }
+
+    private var primaryActionTitle: String {
+        if server.category == .dev && server.framework.speaksHTTP { return "Open in browser" }
+        if server.framework.urlScheme != nil || (server.category == .database && server.localURL != nil) { return "Copy URL" }
+        return isExpanded ? "Hide details" : "Show details"
     }
 
     /// What the light and tags say, for VoiceOver.
@@ -191,8 +196,10 @@ struct ServerRow: View {
                     // CPU turns amber, then red, when a server runs hot.
                     Text(Format.cpu(server.cpu))
                         .foregroundStyle(Theme.heat(server.cpu).map(AnyShapeStyle.init) ?? AnyShapeStyle(.tertiary))
-                    Text(" · \(Format.memory(server.memory))")
-                        .foregroundStyle(.tertiary)
+                    if server.memory > 0 {
+                        Text(" · \(Format.memory(server.memory))")
+                            .foregroundStyle(.tertiary)
+                    }
                 }
                 .font(.system(size: 9.5, design: .monospaced))
                 .lineLimit(1)
@@ -221,19 +228,43 @@ struct ServerRow: View {
 
     private var usageHelp: String {
         let peak = (store.history[server.id] ?? []).max() ?? server.cpu
-        var text = "CPU \(Format.cpu(server.cpu)) now, peak \(Format.cpu(peak)) recently. \(Format.memory(server.memory))"
+        var text = "CPU \(Format.cpu(server.cpu)) now, peak \(Format.cpu(peak)) recently"
+        if server.memory > 0 { text += ". \(Format.memory(server.memory))" }
         if server.processCount > 1 { text += " across \(server.processCount) processes" }
         return text + "."
     }
+}
 
-    private func primaryAction() {
-        switch server.category {
-        case .dev where server.framework.speaksHTTP:
-            store.open(server)
-        case .database where server.localURL != nil:
-            store.copyURL(server)
-        default:
-            onToggleDetails()
+private struct ServerAccessibilityActions: ViewModifier {
+    let server: Server
+    let store: ServerStore
+    let isExpanded: Bool
+    let onToggleDetails: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .accessibilityAction(named: "Stop") { store.stop(server) }
+            .accessibilityAction(named: isExpanded ? "Hide details" : "Show details", onToggleDetails)
+            .modifier(OptionalAction(enabled: server.localURL != nil,
+                                     name: server.framework.urlScheme == nil ? "Copy URL" : "Copy connection URL") {
+                store.copyURL(server)
+            })
+            .modifier(OptionalAction(enabled: server.launch != nil, name: "Restart") {
+                store.restart(server)
+            })
+    }
+}
+
+private struct OptionalAction: ViewModifier {
+    let enabled: Bool
+    let name: String
+    let action: () -> Void
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.accessibilityAction(named: name, action)
+        } else {
+            content
         }
     }
 }
@@ -262,10 +293,11 @@ struct ServerMenu: View {
     let server: Server
     let store: ServerStore
     let onShowLogs: (Server) -> Void
+    let onClose: () -> Void
 
     var body: some View {
         if server.category == .dev && server.framework.speaksHTTP {
-            Button("Open in Browser") { store.open(server) }
+            Button("Open in Browser") { store.open(server); onClose() }
         }
         if let url = store.url(for: server) {
             Button(server.framework.urlScheme == nil ? "Copy URL" : "Copy Connection URL") { store.copy(url.absoluteString) }
@@ -276,12 +308,12 @@ struct ServerMenu: View {
         Divider()
         if server.directory != nil || server.project != nil {
             if let editor = ExternalApp.resolve(store.settings.editorID, in: ExternalApp.editors) {
-                Button("Open in \(editor.name)") { store.openInEditor(server) }
+                Button("Open in \(editor.name)") { store.openInEditor(server); onClose() }
             }
             if let terminal = ExternalApp.resolve(store.settings.terminalID, in: ExternalApp.terminals) {
-                Button("Open in \(terminal.name)") { store.openInTerminal(server) }
+                Button("Open in \(terminal.name)") { store.openInTerminal(server); onClose() }
             }
-            Button("Reveal in Finder") { store.reveal(server) }
+            Button("Reveal in Finder") { store.reveal(server); onClose() }
         }
         if store.logURL(for: server) != nil {
             Button("Show Logs") { onShowLogs(server) }

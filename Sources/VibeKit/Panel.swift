@@ -5,6 +5,19 @@ import VibeKitCore
 /// A borderless panel that drops from the menu bar like a system menu.
 /// It never activates Vibe Kit, so the app you were using stays frontmost.
 final class Panel: NSPanel {
+    /// Standard editing shortcuts. Accessory apps without a main menu bar do not get ⌘C, ⌘V, ⌘X, ⌘A, ⌘Z or ⇧⌘Z
+    /// in text fields, the prompt editor, or the log view unless we dispatch them ourselves.
+    private static let editMenu: NSMenu = {
+        let menu = NSMenu(title: "Edit")
+        menu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        menu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        menu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        menu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        menu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        menu.addItem(withTitle: "Select All", action: #selector(NSResponder.selectAll(_:)), keyEquivalent: "a")
+        return menu
+    }()
+
     init() {
         super.init(contentRect: NSRect(x: 0, y: 0, width: PanelMetrics.width, height: 200),
                    styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
@@ -25,6 +38,17 @@ final class Panel: NSPanel {
 
     /// The panel sits exactly where it was put. AppKit must not nudge it, for example when the menu bar hides.
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // Give standard text editing shortcuts (⌘C, ⌘V, ⌘X, ⌘A, ⌘Z, ⇧⌘Z) first chance when the focused
+        // editor can handle them. Check exact modifiers so ⇧⌘C still reaches Copy URL / Copy Prompt,
+        // and disabled items (like Undo when no text changed) fall through to SwiftUI shortcuts.
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let isEdit = modifiers == .command
+            || (modifiers == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "z")
+        if isEdit, Self.editMenu.performKeyEquivalent(with: event) { return true }
+        return super.performKeyEquivalent(with: event)
+    }
 }
 
 enum PanelMetrics {
@@ -51,6 +75,9 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var opens = 0
     /// Runs while an auto-hiding menu bar is showing under the pointer, to give the panel its focus back after.
     private var menuBarWatch: Timer?
+    /// The app that was in front when the panel opened, so ⌘Tab still closes the panel even if the pointer is in the menu bar.
+    private var frontApp: NSRunningApplication?
+    nonisolated(unsafe) private var screenObserver: NSObjectProtocol?
 
     var isVisible: Bool { panel.isVisible && !prewarming }
     var onVisibilityChange: ((Bool) -> Void)?
@@ -61,10 +88,14 @@ final class PanelController: NSObject, NSWindowDelegate {
         super.init()
         panel.delegate = self
         // Displays come and go, and the menu bar can change height. Keep the open panel under it and on screen.
-        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil,
-                                               queue: .main) { [weak self] _ in
+        screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil,
+                                                                queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.screensChanged() }
         }
+    }
+
+    deinit {
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
     }
 
     /// Opens on `tab`, or on the tab used last. A second press of the same shortcut closes the panel;
@@ -103,10 +134,11 @@ final class PanelController: NSObject, NSWindowDelegate {
         applyPendingResize()
 
         panel.alphaValue = 1
+        frontApp = NSWorkspace.shared.frontmostApplication
         panel.makeKeyAndOrderFront(nil)
         // Scanning stays off the critical path and never blocks showing the cached list.
         store.isPanelOpen = true
-        if Self.pointerIsInMenuBar() { watchMenuBar(front: NSWorkspace.shared.frontmostApplication) }
+        if Self.pointerIsInMenuBar() { watchMenuBar(front: frontApp) }
         onVisibilityChange?(true)
 
         if let monitor { NSEvent.removeMonitor(monitor) }
@@ -190,9 +222,9 @@ final class PanelController: NSObject, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         guard isVisible else { return }
         // An auto-hiding menu bar takes the keyboard while it slides in under the pointer. That is not you leaving:
-        // stay open, so a click on the icon closes the panel instead of reopening it. Clicks elsewhere still close it.
-        if Self.pointerIsInMenuBar() {
-            watchMenuBar(front: NSWorkspace.shared.frontmostApplication)
+        // stay open, so a click on the icon closes the panel instead of reopening it. Switching apps still closes it.
+        if Self.pointerIsInMenuBar(), NSWorkspace.shared.frontmostApplication == frontApp {
+            watchMenuBar(front: frontApp)
         } else {
             close()
         }

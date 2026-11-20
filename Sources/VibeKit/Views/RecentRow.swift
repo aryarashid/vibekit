@@ -7,6 +7,7 @@ struct RecentRow: View {
     let store: ServerStore
     let isSelected: Bool
     let onHover: () -> Void
+    let onShowLogs: (URL) -> Void
 
     private var starting: Bool { store.pending[recent.id] == .starting }
 
@@ -83,7 +84,7 @@ struct RecentRow: View {
                 NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: recent.launch.directory)
             }
             if let log = recent.log, FileManager.default.fileExists(atPath: log.path) {
-                Button("Open Log") { NSWorkspace.shared.open(log) }
+                Button("Show Logs") { onShowLogs(log) }
             }
             Divider()
             Button("Remove from List") { store.forget(recent) }

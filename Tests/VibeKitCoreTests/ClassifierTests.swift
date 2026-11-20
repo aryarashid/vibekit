@@ -114,10 +114,17 @@ struct ClassifierTests {
 
     @Test func workspaces() {
         #expect(classifier.isUserWorkspace("/Users/dev/code/app"))
+        #expect(classifier.isUserWorkspace("/Users/dev/LibraryApp"))
         #expect(!classifier.isUserWorkspace("/Users/dev"))
+        #expect(!classifier.isUserWorkspace("/Users/dev/Library"))
         #expect(!classifier.isUserWorkspace("/Users/dev/Library/Caches/x"))
         #expect(!classifier.isUserWorkspace("/usr/local/lib"))
         #expect(!classifier.isUserWorkspace("/Users/dev/.cache/tool"))
+    }
+
+    @Test func categorySortOrderMatchesMenu() {
+        let ordered = ServerCategory.allCases.sorted { $0.sortOrder < $1.sortOrder }
+        #expect(ordered == [.dev, .database, .service, .other])
     }
 }
 
@@ -172,6 +179,11 @@ struct ProbeTests {
         #expect(Probe.title(in: html) == "Tom & Jerry's App")
     }
 
+    @Test func skipsSimilarTagNamesAndDoesNotDoubleDecodeEntities() {
+        let html = Data("<html><head><titlebar>Nope</titlebar><title>A &amp;lt; B &apos;ok&apos;</title></head>".utf8)
+        #expect(Probe.title(in: html) == "A &lt; B 'ok'")
+    }
+
     @Test func missingTitle() {
         #expect(Probe.title(in: Data("<html><body>hi</body></html>".utf8)) == nil)
         #expect(Probe.title(in: Data("<title></title>".utf8)) == nil)
@@ -216,6 +228,19 @@ struct ProjectResolverTests {
         #expect(project.name == "shop")
         #expect(project.worktree == "shop-fix")
         #expect(project.branch == "fix-login")
+    }
+
+    @Test func relativeWorktreeGitDirResolvesRepositoryName() throws {
+        let root = try makeTemp()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write("ref: refs/heads/main\n", to: root + "/shop/.git/HEAD")
+        try write("ref: refs/heads/rel-branch\n", to: root + "/shop/.git/worktrees/wt/HEAD")
+        try write("gitdir: ../shop/.git/worktrees/wt\r\n", to: root + "/wt/.git")
+
+        let project = ProjectResolver.resolve(root + "/wt", home: "/nonexistent")
+        #expect(project.name == "shop")
+        #expect(project.worktree == "wt")
+        #expect(project.branch == "rel-branch")
     }
 
     @Test func detachedHeadShowsShortHash() throws {

@@ -87,8 +87,9 @@ public final class PortScanner: @unchecked Sendable {
         classified = classified.filter { table[$0.key] != nil }
 
         var units: [pid_t: Unit] = [:]
-        for (pid, ports) in listeners {
-            guard let process = inspect(pid) else { continue }
+        // Deterministic order: a launch unit with several listeners keeps the same root chain and framework across scans.
+        for pid in listeners.keys.sorted() {
+            guard let ports = listeners[pid], let process = inspect(pid) else { continue }
             let framework = classify(process)
             known[pid]?.isOther = framework.category == .other
             let chain = framework.category == .other
@@ -339,11 +340,18 @@ public final class PortScanner: @unchecked Sendable {
         var listeners: [(Inspected, [PortBinding])]
     }
 
+    private static let genericRuntimes: Set<String> = ["node", "bun", "deno", "python", "ruby", "php", "java", "dotnet"]
+
     private func makeServer(_ unit: Unit) -> Server {
-        let primary = unit.listeners.min { $0.0.pid < $1.0.pid }!.0
-        let framework = unit.listeners.map { classify($0.0) }.first { $0.category != .other } ?? unit.framework
+        let sortedListeners = unit.listeners.sorted { $0.0.pid < $1.0.pid }
+        let primary = sortedListeners[0].0
+        let frameworks = sortedListeners.map { classify($0.0) }
+        // Prefer a named framework (Vite, Next.js) over a generic runtime (Node.js) when one unit holds several listeners.
+        let framework = frameworks.first { $0.category != .other && !Self.genericRuntimes.contains($0.id) }
+            ?? frameworks.first { $0.category != .other }
+            ?? unit.framework
         let launch = framework.category == .other ? nil : launchSpec(for: unit.chain)
-        let ports = orderedPorts(unit.listeners.flatMap(\.1), hints: unit.chain.flatMap(\.facts.argv))
+        let ports = orderedPorts(sortedListeners.flatMap(\.1), hints: unit.chain.flatMap(\.facts.argv))
         let projectDir = classifier.projectDirectory(primary.facts, framework: framework)
         let project = projectDir.map(resolveProject)
 

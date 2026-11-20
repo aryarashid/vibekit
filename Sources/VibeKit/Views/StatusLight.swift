@@ -42,13 +42,24 @@ extension ServerStore {
         }
     }
 
-    /// One light for all dev servers, worst first: failing, then not answering, then up.
+    /// One light for all dev servers, worst first: failing, then silent, then starting, then up.
     var overallLight: LightState {
         let lights = devServers.map(light(for:))
         if lights.isEmpty { return .stopped }
         if lights.contains(.failing) { return .failing }
-        if lights.contains(where: { $0 == .waiting || $0 == .silent }) { return .waiting }
+        if lights.contains(.silent) { return .silent }
+        if lights.contains(.waiting) { return .waiting }
         return .up
+    }
+
+    var overallLightHelp: String {
+        switch overallLight {
+        case .failing: "A dev server is answering with errors"
+        case .silent: "A dev server is not answering HTTP requests"
+        case .waiting: "A dev server is not answering yet"
+        case .stopped: "No dev servers running"
+        default: "All dev servers are up"
+        }
     }
 }
 
@@ -89,6 +100,7 @@ final class StatusLightView: NSView {
     private let diameter: CGFloat
     private var state: LightState?
     var announcesReady = true
+    nonisolated(unsafe) private var accessibilityObserver: NSObjectProtocol?
 
     init(diameter: CGFloat) {
         self.diameter = diameter
@@ -102,9 +114,16 @@ final class StatusLightView: NSView {
         }
         ring.opacity = 0
         dot.shadowOffset = .zero
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self, selector: #selector(accessibilityOptionsChanged),
-            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        accessibilityObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.accessibilityOptionsChanged() }
+        }
+    }
+
+    deinit {
+        if let accessibilityObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(accessibilityObserver)
+        }
     }
 
     @available(*, unavailable)

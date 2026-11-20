@@ -49,7 +49,7 @@ public enum LibProc {
         var info = proc_bsdshortinfo()
         let size = Int32(MemoryLayout<proc_bsdshortinfo>.size)
         guard proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 0, &info, size) == size else { return nil }
-        let comm = withUnsafeBytes(of: &info.pbsi_comm) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
+        let comm = withUnsafeBytes(of: &info.pbsi_comm) { string(from: $0) }
         return ShortInfo(pid: pid, ppid: pid_t(info.pbsi_ppid), pgid: pid_t(info.pbsi_pgid), uid: info.pbsi_uid, comm: comm)
     }
 
@@ -129,6 +129,10 @@ public enum LibProc {
         return String(decoding: bytes, as: UTF8.self)
     }
 
+    private static func string(from bytes: UnsafeRawBufferPointer) -> String {
+        String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+    }
+
     // MARK: Paths and arguments
 
     public static func executablePath(_ pid: pid_t) -> String? {
@@ -141,7 +145,7 @@ public enum LibProc {
         var info = proc_vnodepathinfo()
         let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
         guard proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info, size) == size else { return nil }
-        let path = withUnsafeBytes(of: &info.pvi_cdir.vip_path) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
+        let path = withUnsafeBytes(of: &info.pvi_cdir.vip_path) { string(from: $0) }
         return path.isEmpty ? nil : path
     }
 

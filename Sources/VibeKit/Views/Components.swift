@@ -11,31 +11,35 @@ struct Sparkline: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        let current = values.last ?? 0
+        let samples = Array(values.suffix(capacity))
+        let current = samples.last ?? 0
         let glow = colorScheme == .dark && current >= 2 ? min(3.5, 1 + current / 20) : 0
         Canvas { context, size in
-            let peak = max(values.max() ?? 0, 10)
-            let step = size.width / CGFloat(max(capacity - 1, 1))
-            let offset = CGFloat(capacity - values.count) * step
+            let inset: CGFloat = 2
+            let width = max(1, size.width - inset * 2)
+            let height = max(1, size.height - inset * 2)
+            let peak = max(samples.max() ?? 0, 10)
+            let step = width / CGFloat(max(capacity - 1, 1))
+            let offset = inset + CGFloat(capacity - samples.count) * step
             func point(_ index: Int, _ value: Double) -> CGPoint {
                 CGPoint(x: offset + CGFloat(index) * step,
-                        y: size.height - 1.5 - CGFloat(min(value / peak, 1)) * (size.height - 3))
+                        y: size.height - inset - CGFloat(min(value / peak, 1)) * height)
             }
 
             // A faint track across the full width, so a young trace still reads as a meter.
             var track = Path()
-            track.move(to: CGPoint(x: 0, y: size.height - 1.5))
-            track.addLine(to: CGPoint(x: values.count > 1 ? offset : size.width, y: size.height - 1.5))
+            track.move(to: CGPoint(x: inset, y: size.height - inset))
+            track.addLine(to: CGPoint(x: samples.count > 1 ? offset : size.width - inset, y: size.height - inset))
             context.stroke(track, with: .color(tint.opacity(0.3)), style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [1.5, 2.5]))
-            guard values.count > 1 else { return }
+            guard samples.count > 1 else { return }
 
             var line = Path()
-            for (index, value) in values.enumerated() {
+            for (index, value) in samples.enumerated() {
                 let p = point(index, value)
                 if index == 0 { line.move(to: p) } else { line.addLine(to: p) }
             }
             var fill = line
-            fill.addLine(to: CGPoint(x: point(values.count - 1, 0).x, y: size.height))
+            fill.addLine(to: CGPoint(x: point(samples.count - 1, 0).x, y: size.height))
             fill.addLine(to: CGPoint(x: offset, y: size.height))
             fill.closeSubpath()
             context.fill(fill, with: .linearGradient(Gradient(colors: [tint.opacity(0.28), tint.opacity(0)]),
@@ -43,7 +47,7 @@ struct Sparkline: View {
             if glow > 0 { context.addFilter(.shadow(color: tint.opacity(0.9), radius: glow)) }
             context.stroke(line, with: .color(tint), style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
 
-            let last = point(values.count - 1, values[values.count - 1])
+            let last = point(samples.count - 1, samples[samples.count - 1])
             context.fill(Path(ellipseIn: CGRect(x: last.x - 2, y: last.y - 2, width: 4, height: 4)), with: .color(tint))
         }
         .accessibilityHidden(true)

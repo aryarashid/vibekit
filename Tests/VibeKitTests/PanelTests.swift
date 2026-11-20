@@ -172,6 +172,47 @@ final class PanelTests: XCTestCase {
         print(String(format: "PANEL: 30 warm opens median %.1f ms, p95 %.1f ms", durations[15], durations[28]))
     }
 
+    func testEditShortcutsWorkInsideThePanel() throws {
+        let pasteboard = NSPasteboard.general
+        let savedClipboard = pasteboard.string(forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let savedClipboard { pasteboard.setString(savedClipboard, forType: .string) }
+        }
+
+        let (controller, _, name) = fixture()
+        defer { UserDefaults.standard.removePersistentDomain(forName: name) }
+        controller.show(from: nil, tab: .servers)
+        pump(0.1)
+        let panel = try XCTUnwrap(NSApp.windows.compactMap { $0 as? Panel }.first { $0.isVisible })
+        let editor = try XCTUnwrap(panel.firstResponder as? NSTextView)
+        editor.insertText("3000", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+        pump(0.05)
+
+        func key(_ chars: String, unmodified: String? = nil, keyCode: UInt16, flags: NSEvent.ModifierFlags) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                             windowNumber: panel.windowNumber, context: nil, characters: chars,
+                             charactersIgnoringModifiers: unmodified ?? chars, isARepeat: false, keyCode: keyCode)!
+        }
+
+        XCTAssertTrue(panel.performKeyEquivalent(with: key("a", keyCode: 0, flags: .command)))
+        XCTAssertTrue(panel.performKeyEquivalent(with: key("c", keyCode: 8, flags: .command)))
+        XCTAssertEqual(pasteboard.string(forType: .string), "3000")
+
+        // ⇧⌘C still reaches the server's Copy URL shortcut instead of Edit › Copy.
+        XCTAssertTrue(panel.performKeyEquivalent(with: key("c", unmodified: "C", keyCode: 8, flags: [.command, .shift])))
+        XCTAssertEqual(pasteboard.string(forType: .string), "http://localhost:3000")
+
+        pasteboard.clearContents()
+        pasteboard.setString("5173", forType: .string)
+        XCTAssertTrue(panel.performKeyEquivalent(with: key("v", keyCode: 9, flags: .command)))
+        XCTAssertEqual(editor.string, "5173")
+
+        XCTAssertTrue(panel.performKeyEquivalent(with: key("z", keyCode: 6, flags: .command)))
+        XCTAssertEqual(editor.string, "3000")
+        controller.close()
+    }
+
     private func pump(_ seconds: TimeInterval) {
         let end = Date().addingTimeInterval(seconds)
         while Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.005)) }

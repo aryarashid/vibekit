@@ -142,21 +142,29 @@ public enum ProcessControl {
 
     /// We are the parent of spawned servers, so we must reap them or they linger as zombies.
     private static func reapWhenDone(_ pid: pid_t, onExit: @escaping @Sendable (pid_t, Int32) -> Void) {
-        let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .global(qos: .utility))
+        let queue = DispatchQueue(label: "dev.vibekit.reap.\(pid)", qos: .utility)
+        let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: queue)
+        let state = ReapState()
         let reap: @Sendable (_ block: Bool) -> Void = { block in
+            guard !state.done else { return }
             var status: Int32 = 0
             var result: pid_t
             repeat { result = waitpid(pid, &status, block ? 0 : WNOHANG) } while result == -1 && errno == EINTR
             guard result == pid else { return }
+            state.done = true
             source.cancel()
             onExit(pid, exitCode(status))
         }
         // The exit event can arrive a moment before the child becomes a zombie, and it fires only once,
-        // so this wait blocks until the child can be reaped. It returns at once if the check below got it first.
+        // so this wait blocks until the child can be reaped. Both paths run on the same serial queue.
         source.setEventHandler { reap(true) }
         source.resume()
         // The process may have exited before the source was armed.
-        reap(false)
+        queue.async { reap(false) }
+    }
+
+    private final class ReapState: @unchecked Sendable {
+        var done = false
     }
 
     /// Decodes a `waitpid` status: the exit code, or 128 + the signal number, like a shell's `$?`.

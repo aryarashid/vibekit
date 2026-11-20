@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 @testable import VibeKit
@@ -11,27 +12,35 @@ final class LogTests: XCTestCase {
         XCTAssertEqual(LogPage.tail(of: url, bytes: 0), "")
     }
 
-    func testTerminalColorsDoNotLeakEscapeSequences() {
+    func testTailKeepsASingleLongLineEndingInNewline() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let longLine = String(repeating: "x", count: 80) + "\n"
+        try Data(longLine.utf8).write(to: url)
+        XCTAssertEqual(LogPage.tail(of: url, bytes: 20), String(repeating: "x", count: 19) + "\n")
+    }
+
+    @MainActor func testTerminalColorsDoNotLeakEscapeSequences() {
         let output = ANSI.render("\u{1B}[31mError\u{1B}[0m\nprogress 1\rprogress 2")
-        XCTAssertEqual(String(output.characters), "Error\nprogress 2\n")
+        XCTAssertEqual(output.string, "Error\nprogress 2\n")
     }
 
-    func testTwoCharacterEscapesDoNotSwallowTheLine() {
-        // `tput sgr0` emits ESC ( B; ESC 7 saves the cursor.
-        let output = ANSI.render("\u{1B}(B\u{1B}[mready\u{1B}7 in 120 ms\n\u{1B}]0;title\u{07}next")
-        XCTAssertEqual(String(output.characters), "ready in 120 ms\nnext\n")
+    @MainActor func testTwoCharacterAndNonLetterCSIEscapesDoNotSwallowTheLine() {
+        // `tput sgr0` emits ESC ( B; ESC 7 saves the cursor; CSI 2 @ inserts blanks.
+        let output = ANSI.render("\u{1B}(B\u{1B}[m\u{1B}[2@ready\u{1B}7 in 120 ms\n\u{1B}]0;title\u{07}next")
+        XCTAssertEqual(output.string, "ready in 120 ms\nnext\n")
     }
 
-    func testTruecolorBackgroundIsNotReadAsDimOrRed() {
+    @MainActor func testTruecolorBackgroundIsNotReadAsDimOrRed() {
         let output = ANSI.render("\u{1B}[48;2;31;2;0mplain")
-        let run = output.runs.first!
-        XCTAssertEqual(run.appKit.foregroundColor, .labelColor)
-        XCTAssertEqual(run.appKit.font, ANSI.font)
+        let attrs = output.attributes(at: 0, effectiveRange: nil)
+        XCTAssertEqual(attrs[.foregroundColor] as? NSColor, .labelColor)
+        XCTAssertEqual(attrs[.font] as? NSFont, ANSI.font)
     }
 
-    func testColonFormColorsDoNotResetTheLine() {
+    @MainActor func testColonFormColorsDoNotResetTheLine() {
         let output = ANSI.render("\u{1B}[1m\u{1B}[38:2:255:0:0mbold")
-        XCTAssertEqual(output.runs.first?.appKit.font, ANSI.boldFont)
+        XCTAssertEqual(output.attributes(at: 0, effectiveRange: nil)[.font] as? NSFont, ANSI.boldFont)
     }
 
     func testASlidingTailWindowIsAnOverlapNotANewText() {
@@ -100,7 +109,7 @@ final class LogTests: XCTestCase {
         XCTAssertEqual(LogTextView.longestSuffixThatStarts(units("aaaa"), units("aaaaaa")), 4)
     }
 
-    func testOutputEndingInANewlineHasNoBlankLastLine() {
-        XCTAssertEqual(String(ANSI.render("a\nb\n").characters), "a\nb\n")
+    @MainActor func testOutputEndingInANewlineHasNoBlankLastLine() {
+        XCTAssertEqual(ANSI.render("a\nb\n").string, "a\nb\n")
     }
 }

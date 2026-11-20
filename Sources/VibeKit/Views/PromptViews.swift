@@ -50,6 +50,7 @@ struct PromptListPage: View {
     @State private var keyboardMoved = false
     @State private var clipboardText: String?
     @State private var pendingUse: Task<Void, Never>?
+    @State private var unrecordedUse: UUID?
     /// See `ServerListPage.hoverLock`.
     @State private var hoverLock: NSPoint?
     @FocusState private var searchFocused: Bool
@@ -81,7 +82,14 @@ struct PromptListPage: View {
             if selectFirst { selection = PromptLibrary.search(prompts.prompts, query: initialQuery).first?.id }
             clipboardText = NSPasteboard.general.string(forType: .string).flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
         }
-        .onDisappear { pendingUse?.cancel() }
+        .onDisappear {
+            pendingUse?.cancel()
+            pendingUse = nil
+            if let id = unrecordedUse {
+                unrecordedUse = nil
+                prompts.recordUse(id)
+            }
+        }
         .background(shortcuts(list))
     }
 
@@ -90,6 +98,7 @@ struct PromptListPage: View {
     private func header(_ list: [Prompt]) -> some View {
         HStack(spacing: 9) {
             BrandMark(state: store.overallLight)
+                .help(store.overallLightHelp)
             TextField("Search prompts", text: $query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13.5))
@@ -129,27 +138,31 @@ struct PromptListPage: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 26)
             } else {
-                let maxScore = list.map { $0.score() }.max() ?? 0
+                let now = Date()
+                // Scale the usage bar against unpinned prompts, since pinned prompts show a pin instead.
+                let maxScore = list.lazy.filter { !$0.pinned }.map { $0.score(now: now) }.max() ?? 0
                 let active = active(in: list)?.id
                 let pinned = list.filter(\.pinned)
                 let rest = list.filter { !$0.pinned }
                 if !pinned.isEmpty && query.isEmpty {
                     SectionHeader(title: "Pinned", count: pinned.count)
-                    rows(pinned, maxScore: maxScore, offset: 0, active: active)
-                    SectionHeader(title: "Most Used", count: rest.count)
-                    rows(rest, maxScore: maxScore, offset: pinned.count, active: active)
+                    rows(pinned, maxScore: maxScore, now: now, offset: 0, active: active)
+                    if !rest.isEmpty {
+                        SectionHeader(title: "Most Used", count: rest.count)
+                        rows(rest, maxScore: maxScore, now: now, offset: pinned.count, active: active)
+                    }
                 } else {
                     SectionHeader(title: query.isEmpty ? "Most Used" : "Results", count: list.count)
-                    rows(list, maxScore: maxScore, offset: 0, active: active)
+                    rows(list, maxScore: maxScore, now: now, offset: 0, active: active)
                 }
             }
         }
         .padding(.bottom, 6)
     }
 
-    private func rows(_ items: [Prompt], maxScore: Double, offset: Int, active: UUID?) -> some View {
+    private func rows(_ items: [Prompt], maxScore: Double, now: Date, offset: Int, active: UUID?) -> some View {
         ForEach(Array(items.enumerated()), id: \.element.id) { index, prompt in
-            PromptRow(prompt: prompt, number: offset + index + 1, heat: maxScore > 0 ? prompt.score() / maxScore : 0,
+            PromptRow(prompt: prompt, number: offset + index + 1, heat: maxScore > 0 ? prompt.score(now: now) / maxScore : 0,
                       isSelected: active == prompt.id, wasUsed: used == prompt.id,
                       onHover: { hover(prompt.id) },
                       onUse: { use(prompt) },
@@ -258,20 +271,29 @@ struct PromptListPage: View {
 
     // MARK: Actions
 
-    /// Copies, or pastes when that is on. The copy happens at once; the row flashes before the panel goes,
-    /// so you see it worked, and closing the panel meanwhile cannot lose it.
+    /// Copies, or pastes when that is on. The copy happens at once; the row flashes in place before the panel goes,
+    /// so it does not jump mid-flash, and closing the panel meanwhile still records the use.
     private func use(_ prompt: Prompt?) {
         guard let prompt else { return }
-        prompts.copy(prompt)
+        prompts.copyToClipboard(prompt)
         if store.settings.pasteOnUse && PromptStore.canPaste {
+            prompts.recordUse(prompt.id)
             onUse(prompt)
             return
         }
+        if let previous = unrecordedUse, previous != prompt.id {
+            prompts.recordUse(previous)
+        }
+        unrecordedUse = prompt.id
         used = prompt.id
         pendingUse?.cancel()
         pendingUse = Task {
             try? await Task.sleep(for: .milliseconds(320))
             guard !Task.isCancelled else { return }
+            if unrecordedUse == prompt.id {
+                unrecordedUse = nil
+                prompts.recordUse(prompt.id)
+            }
             onUse(prompt)
         }
     }

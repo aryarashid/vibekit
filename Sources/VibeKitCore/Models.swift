@@ -33,6 +33,16 @@ public enum ServerCategory: String, Sendable, Codable, CaseIterable {
         case .other: "Other Listeners"
         }
     }
+
+    /// Display order in both the menu panel and `--list`.
+    public var sortOrder: Int {
+        switch self {
+        case .dev: 0
+        case .database: 1
+        case .service: 2
+        case .other: 3
+        }
+    }
 }
 
 public struct Project: Hashable, Sendable {

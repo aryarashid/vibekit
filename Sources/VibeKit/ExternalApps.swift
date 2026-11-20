@@ -10,6 +10,7 @@ struct ExternalApp: Identifiable, Hashable {
 
     static let editorIDs: [(String, String)] = [
         ("com.todesktop.230313mzl4w4u92", "Cursor"),
+        ("com.google.antigravity", "Antigravity"),
         ("com.microsoft.VSCode", "VS Code"),
         ("com.microsoft.VSCodeInsiders", "VS Code Insiders"),
         ("dev.zed.Zed", "Zed"),
@@ -31,6 +32,7 @@ struct ExternalApp: Identifiable, Hashable {
         ("dev.warp.Warp-Stable", "Warp"),
         ("net.kovidgoyal.kitty", "kitty"),
         ("com.github.wez.wezterm", "WezTerm"),
+        ("org.alacritty", "Alacritty"),
         ("com.apple.Terminal", "Terminal"),
     ]
 

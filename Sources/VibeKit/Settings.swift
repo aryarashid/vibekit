@@ -45,7 +45,13 @@ final class Settings {
         } catch {
             NSLog("Vibe Kit: launch at login change failed: \(error.localizedDescription)")
         }
-        launchAtLogin = SMAppService.mainApp.status == .enabled
+        refreshLaunchAtLogin()
+    }
+
+    /// Re-reads the system Login Items state in case it was changed in System Settings.
+    func refreshLaunchAtLogin() {
+        let enabled = SMAppService.mainApp.status == .enabled
+        if launchAtLogin != enabled { launchAtLogin = enabled }
     }
 
     /// Turn on launch at login the first time the app runs from where it is installed.

@@ -4,7 +4,7 @@ import VibeKitCore
 enum Route: Equatable {
     case list
     case settings
-    case logs(Server)
+    case logs(subtitle: String, url: URL)
     /// The prompt editor. `nil` writes a new prompt.
     case prompt(UUID?)
 }
@@ -55,8 +55,8 @@ struct PanelRootView: View {
                 ServerListPage(store: store, tab: $tab, route: $route, onHeightChange: onHeightChange, close: close, initial: initial)
             case .settings:
                 SettingsPage(store: store, prompts: prompts, back: { route = .list }, onHeightChange: onHeightChange)
-            case .logs(let server):
-                LogPage(server: server, store: store, back: { route = .list }, onHeightChange: onHeightChange)
+            case .logs(let subtitle, let url):
+                LogPage(subtitle: subtitle, url: url, back: { route = .list }, onHeightChange: onHeightChange)
             case .prompt(let id):
                 PromptEditor(prompts: prompts, id: id, back: { route = .list }, onHeightChange: onHeightChange)
             }
@@ -144,6 +144,7 @@ struct ServerListPage: View {
     @State private var selection: String?
     @State private var expanded: String?
     @State private var confirmStopAll = false
+    @State private var stopAllResetTask: Task<Void, Never>?
     /// Where the pointer was when the keyboard last moved the selection. Rows that scroll or expand under a still
     /// pointer must not take the selection, or a shortcut would act on a server you did not pick.
     @State private var hoverLock: NSPoint?
@@ -196,7 +197,7 @@ struct ServerListPage: View {
     private func header(items: [Item]) -> some View {
         HStack(spacing: 9) {
             BrandMark(state: store.overallLight)
-                .help(overallHelp)
+                .help(store.overallLightHelp)
             TextField("Search servers, ports, projects", text: $query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13.5))
@@ -208,6 +209,12 @@ struct ServerListPage: View {
                     guard query.isEmpty, let id = selection, !id.hasPrefix("recent:") else { return .ignored }
                     hoverLock = NSEvent.mouseLocation
                     toggleDetails(id)
+                    return .handled
+                }
+                .onKeyPress(.leftArrow) {
+                    guard query.isEmpty, expanded != nil else { return .ignored }
+                    hoverLock = NSEvent.mouseLocation
+                    withAnimation(.snappy(duration: 0.22)) { expanded = nil }
                     return .handled
                 }
                 .onKeyPress(.escape) {
@@ -229,15 +236,6 @@ struct ServerListPage: View {
         .padding(.leading, 15)
         .padding(.trailing, 8)
         .frame(height: Self.headerHeight)
-    }
-
-    private var overallHelp: String {
-        switch store.overallLight {
-        case .failing: "A dev server is answering with errors"
-        case .waiting: "A dev server is not answering yet"
-        case .stopped: "No dev servers running"
-        default: "All dev servers are up"
-        }
     }
 
     // MARK: Content
@@ -299,13 +297,16 @@ struct ServerListPage: View {
     private func sectionView(_ section: Section, active: String?) -> some View {
         if section.collapsible {
             let count = store.servers(in: .other).filter(matches).count
-            SectionHeader(title: section.title, count: count, collapsed: section.items.isEmpty)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    guard query.isEmpty else { return }
-                    withAnimation(.easeOut(duration: 0.18)) { store.settings.showOtherListeners.toggle() }
-                }
-                .help(section.items.isEmpty ? "Show apps and system services that listen on a port" : "Hide")
+            Button {
+                guard query.isEmpty else { return }
+                withAnimation(.easeOut(duration: 0.18)) { store.settings.showOtherListeners.toggle() }
+            } label: {
+                SectionHeader(title: section.title, count: count, collapsed: section.items.isEmpty)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!query.isEmpty)
+            .help(section.items.isEmpty ? "Show apps and system services that listen on a port" : "Hide")
         } else if section.id == "recents" {
             SectionHeader(title: section.title, count: section.items.count, trailing: AnyView(
                 Button("Clear") { store.clearRecents() }
@@ -327,10 +328,17 @@ struct ServerListPage: View {
         case .server(let server):
             ServerRow(server: server, store: store, isSelected: isSelected, isExpanded: expanded == item.id,
                       onHover: { hover(item.id) },
+                      onActivate: { activate(.server(server)) },
                       onToggleDetails: { toggleDetails(item.id) },
-                      onShowLogs: { route = .logs($0) })
+                      onShowLogs: { server in
+                          if let url = store.logURL(for: server) {
+                              route = .logs(subtitle: "\(server.title) · \(server.primaryPort)", url: url)
+                          }
+                      },
+                      onClose: close)
         case .recent(let recent):
-            RecentRow(recent: recent, store: store, isSelected: isSelected, onHover: { hover(item.id) })
+            RecentRow(recent: recent, store: store, isSelected: isSelected, onHover: { hover(item.id) },
+                      onShowLogs: { url in route = .logs(subtitle: "\(recent.title) · \(recent.port)", url: url) })
         }
     }
 
@@ -441,14 +449,16 @@ struct ServerListPage: View {
 
     private func stopAllButton(count: Int) -> some View {
         Button {
+            stopAllResetTask?.cancel()
+            stopAllResetTask = nil
             if confirmStopAll {
                 store.stopAll()
                 confirmStopAll = false
             } else {
                 confirmStopAll = true
-                Task {
+                stopAllResetTask = Task {
                     try? await Task.sleep(for: .seconds(3))
-                    confirmStopAll = false
+                    if !Task.isCancelled { confirmStopAll = false }
                 }
             }
         } label: {
@@ -538,7 +548,7 @@ struct ServerListPage: View {
             if server.category == .dev && server.framework.speaksHTTP {
                 store.open(server)
                 close()
-            } else if server.framework.urlScheme != nil {
+            } else if server.framework.urlScheme != nil || (server.category == .database && server.localURL != nil) {
                 store.copyURL(server)
             } else {
                 toggleDetails(server.id)

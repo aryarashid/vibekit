@@ -48,7 +48,7 @@ public enum Probe {
             let (bytes, response) = try await session.bytes(from: url)
             guard let http = response as? HTTPURLResponse else { return .failure(URLError(.badServerResponse)) }
             var data = Data()
-            let isHTML = (http.value(forHTTPHeaderField: "Content-Type") ?? "").contains("html")
+            let isHTML = (http.value(forHTTPHeaderField: "Content-Type") ?? "").localizedCaseInsensitiveContains("html")
             if isHTML {
                 for try await byte in bytes {
                     data.append(byte)
@@ -83,27 +83,43 @@ public enum Probe {
     }
 
     static func isLocal(_ host: String) -> Bool {
-        let bare = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        let bare = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).lowercased()
         return bare == "localhost" || bare.hasPrefix("127.") || bare == "::1"
     }
 
     static func title(in data: Data) -> String? {
         let html = String(decoding: data, as: UTF8.self)
-        guard let open = html.range(of: "<title", options: .caseInsensitive),
-              let close = html.range(of: ">", range: open.upperBound..<html.endIndex),
-              let end = html.range(of: "</title>", options: .caseInsensitive, range: close.upperBound..<html.endIndex)
+        var search = html.startIndex..<html.endIndex
+        var contentStart: String.Index?
+        while let open = html.range(of: "<title", options: .caseInsensitive, range: search) {
+            let after = open.upperBound
+            guard after < html.endIndex else { break }
+            let next = html[after]
+            // Reject tags like <titlebar> that only share a prefix.
+            if next == ">" || next.isWhitespace {
+                if let close = html.range(of: ">", range: after..<html.endIndex) {
+                    contentStart = close.upperBound
+                }
+                break
+            }
+            search = after..<html.endIndex
+        }
+        guard let start = contentStart,
+              let end = html.range(of: "</title>", options: .caseInsensitive, range: start..<html.endIndex)
         else { return nil }
-        let raw = html[close.upperBound..<end.lowerBound]
+        let raw = html[start..<end.lowerBound]
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespaces)
+        // Decode `&amp;` last so `&amp;lt;` becomes `&lt;`, not `<`.
         let decoded = raw
-            .replacingOccurrences(of: "&amp;", with: "&")
             .replacingOccurrences(of: "&lt;", with: "<")
             .replacingOccurrences(of: "&gt;", with: ">")
             .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&apos;", with: "'")
             .replacingOccurrences(of: "&#39;", with: "'")
             .replacingOccurrences(of: "&#x27;", with: "'")
             .replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&amp;", with: "&")
         return decoded.isEmpty ? nil : decoded
     }
 }
@@ -195,6 +211,6 @@ public enum Network {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) == 0 }
         }
         guard named else { return nil }
-        return String(cString: inet_ntoa(local.sin_addr))
+        return LibProc.ipv4String(local.sin_addr)
     }
 }

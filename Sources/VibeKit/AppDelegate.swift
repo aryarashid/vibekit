@@ -10,7 +10,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var panel = PanelController(store: store, prompts: prompts)
     private var statusItem: NSStatusItem!
     private let hotKey = HotKey()
-    private var observation: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -44,6 +43,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSUpdateDynamicServices()
         // Load SwiftUI before the first click, once launch has settled.
         DispatchQueue.main.async { [weak self] in self?.panel.prewarm() }
+    }
+
+    /// Launching Vibe Kit again from Spotlight or Finder opens the panel (helpful when the icon hides behind a notch).
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        panel.show(from: statusItem.button)
+        return false
     }
 
     /// The Services menu item. Saves the selected text as a prompt and opens it so you can name it.
@@ -109,7 +114,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
-        if NSApp.currentEvent?.type == .rightMouseUp {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || (event?.type == .leftMouseUp && event?.modifierFlags.contains(.control) == true) {
             showMenu()
         } else {
             togglePanel()
@@ -122,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showMenu() {
         panel.close()
+        settings.refreshLaunchAtLogin()
         let menu = NSMenu()
         let open = NSMenuItem(title: "Open Vibe Kit", action: #selector(openPanel), keyEquivalent: "")
         open.target = self

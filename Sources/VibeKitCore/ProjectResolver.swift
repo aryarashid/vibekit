@@ -27,8 +27,9 @@ public enum ProjectResolver {
                   let line = contents.split(separator: "\n").first(where: { $0.hasPrefix("gitdir:") }) else {
                 return Project(name: name, root: root, subpath: subpath(directory, root), branch: nil, worktree: nil)
             }
-            var target = line.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespaces)
+            var target = line.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespacesAndNewlines)
             if !target.hasPrefix("/") { target = (root as NSString).appendingPathComponent(target) }
+            target = URL(fileURLWithPath: target).standardized.path
             gitDir = target
             if let range = target.range(of: "/.git/worktrees/") {
                 name = ((String(target[..<range.lowerBound])) as NSString).lastPathComponent

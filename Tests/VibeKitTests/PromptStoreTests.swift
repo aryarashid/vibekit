@@ -41,4 +41,22 @@ final class PromptStoreTests: XCTestCase {
         XCTAssertEqual(store.prompt(id)?.text, "Review this diff carefully")
         XCTAssertEqual(store.prompts.count, 1)
     }
+
+    func testSameSecondExternalEditChangingLengthIsDetected() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vk-store-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("prompts.json")
+        let store = PromptStore(file: file)
+        let prompt = store.add(text: "Short")
+        let mtime = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: file.path)[.modificationDate] as? Date)
+
+        var edited = try PromptLibrary.load(from: file)
+        edited[0].text = "Much longer external edit"
+        try PromptLibrary.save(edited, to: file)
+        // Pin modification date back to the exact timestamp the store recorded.
+        try FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: file.path)
+
+        store.reloadIfChanged()
+        XCTAssertEqual(store.prompt(prompt.id)?.text, "Much longer external edit")
+    }
 }
