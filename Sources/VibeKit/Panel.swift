@@ -77,6 +77,8 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var menuBarWatch: Timer?
     /// The app that was in front when the panel opened, so ⌘Tab still closes the panel even if the pointer is in the menu bar.
     private var frontApp: NSRunningApplication?
+    /// The menu bar button that owns this panel, so clicks on it toggle cleanly instead of closing on down and reopening on up.
+    private weak var statusButton: NSStatusBarButton?
     nonisolated(unsafe) private var screenObserver: NSObjectProtocol?
 
     var isVisible: Bool { panel.isVisible && !prewarming }
@@ -109,6 +111,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     func show(from button: NSStatusBarButton?, tab: PanelTab? = nil, route: Route = .list) {
+        if let button { statusButton = button }
         if prewarming {
             prewarming = false
             panel.orderOut(nil)
@@ -143,8 +146,24 @@ final class PanelController: NSObject, NSWindowDelegate {
 
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            Task { @MainActor in self?.close() }
+            let location = NSEvent.mouseLocation
+            Task { @MainActor [weak self] in self?.handleGlobalMouseDown(at: location) }
         }
+    }
+
+    /// Closes on clicks outside the panel, except clicks on Vibe Kit's own status bar button.
+    /// On macOS, the global mouse monitor fires on mouse-down even for clicks on our status item;
+    /// closing there would let the button's mouse-up action immediately reopen the panel.
+    func handleGlobalMouseDown(at location: NSPoint) {
+        guard isVisible else { return }
+        if Self.isPointOnStatusButton(statusButton, at: location) { return }
+        close()
+    }
+
+    static func isPointOnStatusButton(_ button: NSStatusBarButton?, at point: NSPoint) -> Bool {
+        guard let button, let window = button.window, window.isVisible else { return false }
+        let buttonRect = window.convertToScreen(button.convert(button.bounds, to: nil))
+        return PanelGeometry.contains(point, in: buttonRect.union(window.frame))
     }
 
     private func makeRoot(initial: PanelRootView.InitialState) -> PanelRootView {
@@ -221,9 +240,10 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     func windowDidResignKey(_ notification: Notification) {
         guard isVisible else { return }
-        // An auto-hiding menu bar takes the keyboard while it slides in under the pointer. That is not you leaving:
-        // stay open, so a click on the icon closes the panel instead of reopening it. Switching apps still closes it.
-        if Self.pointerIsInMenuBar(), NSWorkspace.shared.frontmostApplication == frontApp {
+        // Clicking our own status bar button lets its action close the panel cleanly instead of closing on down
+        // and reopening on up. An auto-hiding menu bar sliding in also keeps the panel open unless you switched apps.
+        if Self.isPointOnStatusButton(statusButton, at: NSEvent.mouseLocation)
+            || (Self.pointerIsInMenuBar() && NSWorkspace.shared.frontmostApplication == frontApp) {
             watchMenuBar(front: frontApp)
         } else {
             close()
@@ -236,7 +256,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private static func pointerIsInMenuBar() -> Bool {
         let pointer = NSEvent.mouseLocation
-        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) else { return false }
+        guard let screen = NSScreen.screens.first(where: { PanelGeometry.contains(pointer, in: $0.frame) }) else { return false }
         return pointer.y >= screen.frame.maxY - Placement.menuBarHeight(on: screen) - 4
     }
 
@@ -416,6 +436,11 @@ enum PanelGeometry {
         let height = min(max(preferredHeight, 120), PanelMetrics.maxHeight, availableHeight)
         let x = min(max(midX - width / 2, visibleFrame.minX + 8), visibleFrame.maxX - width - 8)
         return CGRect(x: x, y: safeTop - height, width: width, height: height)
+    }
+
+    /// Inclusive hit test so the top edge pixel of the menu bar still counts as inside the screen or status button.
+    static func contains(_ point: CGPoint, in rect: CGRect) -> Bool {
+        point.x >= rect.minX && point.x <= rect.maxX && point.y >= rect.minY && point.y <= rect.maxY
     }
 }
 

@@ -187,7 +187,10 @@ final class PanelTests: XCTestCase {
         let panel = try XCTUnwrap(NSApp.windows.compactMap { $0 as? Panel }.first { $0.isVisible })
         let editor = try XCTUnwrap(panel.firstResponder as? NSTextView)
         editor.insertText("3000", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
-        pump(0.05)
+        // Wait for SwiftUI to apply the filter so the single match (port 3000) becomes active.
+        let deadline = Date().addingTimeInterval(2)
+        while panel.frame.height >= 300 && Date() < deadline { pump(0.01) }
+        XCTAssertLessThan(panel.frame.height, 300)
 
         func key(_ chars: String, unmodified: String? = nil, keyCode: UInt16, flags: NSEvent.ModifierFlags) -> NSEvent {
             NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
@@ -211,6 +214,39 @@ final class PanelTests: XCTestCase {
         XCTAssertTrue(panel.performKeyEquivalent(with: key("z", keyCode: 6, flags: .command)))
         XCTAssertEqual(editor.string, "3000")
         controller.close()
+    }
+
+    func testClickingTheStatusButtonClosesInsteadOfClosingAndReopening() throws {
+        let (controller, _, name) = fixture()
+        defer { UserDefaults.standard.removePersistentDomain(forName: name) }
+        let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        defer { NSStatusBar.system.removeStatusItem(statusItem) }
+        let button = try XCTUnwrap(statusItem.button)
+        button.title = "V"
+        pump(0.05)
+
+        let window = try XCTUnwrap(button.window)
+        let buttonRect = window.convertToScreen(button.convert(button.bounds, to: nil))
+        let hitRect = buttonRect.union(window.frame)
+
+        controller.toggle(from: button)
+        XCTAssertTrue(controller.isVisible)
+
+        // On macOS, the global mouse-down monitor fires even when clicking our own status item.
+        // It must ignore clicks on the status button (center and top edge) so the button's toggle closes it.
+        controller.handleGlobalMouseDown(at: NSPoint(x: hitRect.midX, y: hitRect.midY))
+        XCTAssertTrue(controller.isVisible, "Global mouse-down on the status button must not close before toggle runs")
+        controller.handleGlobalMouseDown(at: NSPoint(x: hitRect.midX, y: hitRect.maxY))
+        XCTAssertTrue(controller.isVisible, "Global mouse-down at the top edge of the status button must not close")
+
+        controller.toggle(from: button)
+        XCTAssertFalse(controller.isVisible, "Second click on the status button must close the panel")
+
+        // A click outside the status button still closes the panel immediately.
+        controller.toggle(from: button)
+        XCTAssertTrue(controller.isVisible)
+        controller.handleGlobalMouseDown(at: NSPoint(x: hitRect.minX - 40, y: hitRect.midY))
+        XCTAssertFalse(controller.isVisible, "Clicking outside the status button must close the panel")
     }
 
     private func pump(_ seconds: TimeInterval) {
