@@ -159,13 +159,44 @@ final class LidSleepHelperTests: XCTestCase {
         XCTAssertEqual(try lines(), ["disablesleep 0"])
     }
 
-    func testStartingWithTheLidClosedNeverHoldsTheMacAwake() throws {
-        // A restart or update while the Mac is in a bag cannot know when the lid closed.
+    func testStartingWithTheLidClosedStillSleepsWithinTheDelay() throws {
+        // A first start, or a restart without saved state, while the Mac is in a bag. Clearing
+        // the flag alone would not make it sleep, so count down from now and then sleep.
         try write("lid", "Yes")
         try runHelper()
-        try write("now", String(1000 + 3 * 3600))
+        try write("now", String(1000 + 44 * 60))
         try runHelper()
-        XCTAssertEqual(try lines(), ["disablesleep 0"])
+        XCTAssertEqual(try lines(), ["disablesleep 1"])
+        try write("now", String(1000 + 45 * 60))
+        try runHelper()
+        XCTAssertEqual(try lines(), ["disablesleep 1", "disablesleep 0", "sleepnow"])
+    }
+
+    func testTheDaemonKeepsItsTimerAcrossARestart() throws {
+        // Run the real loop twice against the same state file, as launchd would after an update.
+        try runHelper()
+        try write("lid", "Yes")
+        try write("now", "1000")
+        try runDaemonBriefly()
+        try write("now", String(1000 + 45 * 60))
+        try runDaemonBriefly()
+        XCTAssertTrue(try lines().contains("sleepnow"), "The restarted helper should keep counting from 1000")
+    }
+
+    private func runDaemonBriefly() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [script.path]
+        process.environment = [
+            "VIBEKIT_LID_FAKE_DIR": directory.path,
+            "VIBEKIT_LID_CONFIG": directory.appendingPathComponent("config").path,
+            "VIBEKIT_LID_STATE": directory.appendingPathComponent("daemon-state").path,
+            "VIBEKIT_LID_INTERVAL": "5",
+        ]
+        try process.run()
+        Thread.sleep(forTimeInterval: 0.5)
+        process.terminate()
+        process.waitUntilExit()
     }
 
     func testDockingAfterSleepStartsAFreshTimerOnUndock() throws {

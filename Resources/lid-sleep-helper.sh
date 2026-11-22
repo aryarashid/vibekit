@@ -9,7 +9,7 @@ fake=${VIBEKIT_LID_FAKE_DIR-}
 if [[ ${VIBEKIT_LID_FAKE_DIR+x} && -z $fake ]]; then exit 2; fi
 # Written by the installer, root's like this script: the app this helper belongs to.
 app_file=${VIBEKIT_LID_APP_FILE:-/Library/Application Support/Vibe Kit/app-path}
-closed_at='' fired=0 fired_at='' slept=0 seen_open=0 last_tick='' flag='' last_minutes='' docked=0
+closed_at='' fired=0 fired_at='' slept=0 last_tick='' flag='' last_minutes='' docked=0
 real_flag=''
 
 read_minutes() {
@@ -127,16 +127,15 @@ tick() {
     last_tick=$now
 
     if [[ $lid == No ]]; then
-        closed_at='' fired=0 docked=0 seen_open=1
+        closed_at='' fired=0 docked=0
         set_flag 1
     elif [[ $lid == Yes && $causes == No ]]; then
         [[ $docked == 1 ]] || log_change "Lid closed while docked"
         # Docking is a fresh start: unplugging later starts a new timer.
-        closed_at='' fired=0 docked=1 seen_open=1
+        closed_at='' fired=0 docked=1
         set_flag 1
-    elif [[ $lid != Yes || $causes != Yes || $seen_open == 0 ]]; then
-        # Sleep normally if the sensor is unavailable, or if this helper started with the lid
-        # already closed (a restart or update in a bag), since it cannot know how long ago.
+    elif [[ $lid != Yes || $causes != Yes ]]; then
+        # Sleep normally if the sensor is unavailable.
         set_flag 0
     elif [[ $fired == 1 ]]; then
         # Wakes with the lid still closed never start the timer again. If the Mac never went
@@ -181,7 +180,6 @@ load_state() {
             last_tick=*) [[ ${line#*=} =~ ^[0-9]{1,12}$ ]] && last_tick=${line#*=} ;;
             fired=[01]) fired=${line#*=} ;;
             slept=[01]) slept=${line#*=} ;;
-            seen_open=[01]) seen_open=${line#*=} ;;
             flag=[01]) flag=${line#*=} ;;
             docked=[01]) docked=${line#*=} ;;
             last_minutes=0|last_minutes=15|last_minutes=30|last_minutes=45|last_minutes=60)
@@ -190,20 +188,21 @@ load_state() {
     done < "$1"
 }
 
+save_state() {
+    [[ -z $closed_at ]] || printf 'closed_at=%s\n' "$closed_at"
+    [[ -z $flag ]] || printf 'flag=%s\n' "$flag"
+    [[ -z $fired_at ]] || printf 'fired_at=%s\n' "$fired_at"
+    [[ -z $last_tick ]] || printf 'last_tick=%s\n' "$last_tick"
+    printf 'fired=%s\nslept=%s\ndocked=%s\nlast_minutes=%s\n' "$fired" "$slept" "$docked" "$last_minutes"
+}
+
 if [[ $# == 1 && $1 == --off ]]; then
     action disablesleep 0
     exit 0
 elif [[ $# == 2 && $1 == --tick ]]; then
     [[ ! -f $2 ]] || load_state "$2"
     tick
-    {
-        [[ -z $closed_at ]] || printf 'closed_at=%s\n' "$closed_at"
-        [[ -z $flag ]] || printf 'flag=%s\n' "$flag"
-        [[ -z $fired_at ]] || printf 'fired_at=%s\n' "$fired_at"
-        [[ -z $last_tick ]] || printf 'last_tick=%s\n' "$last_tick"
-        printf 'slept=%s\nseen_open=%s\n' "$slept" "$seen_open"
-        printf 'fired=%s\ndocked=%s\nlast_minutes=%s\n' "$fired" "$docked" "$last_minutes"
-    } > "$2"
+    save_state > "$2"
     exit $?
 elif (( $# != 0 )); then
     exit 2
@@ -217,8 +216,18 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 0' TERM INT HUP
+# Keep the timer across restarts and updates, so one with the lid closed carries on counting
+# rather than starting over or losing track. /var/run is root's and is emptied at boot.
+state_file=${VIBEKIT_LID_STATE:-/var/run/dev.vibekit.lid-sleep.state}
+[[ -f $state_file && ! -L $state_file ]] && load_state "$state_file"
+saved=$(save_state)
 while :; do
     tick
+    state=$(save_state)
+    if [[ $state != "$saved" ]]; then
+        [[ -L $state_file ]] || printf '%s\n' "$state" > "$state_file"
+        saved=$state
+    fi
     /bin/sleep "${VIBEKIT_LID_INTERVAL:-10}" &
     sleeper=$!
     wait "$sleeper"
