@@ -541,7 +541,7 @@ final class LidSleepHelperTests: XCTestCase {
         try write("now", "5001")
         waitFor("The timer should end the countdown") { (try? lines())?.contains("sleepnow") == true }
         XCTAssertEqual(try lines(), ["disablesleep 0", "sleepnow"])
-        XCTAssertEqual(try status().state, .slept)
+        waitFor("And report slept") { (try? status().state) == .slept }
     }
 
     func testTheDaemonStopsSoonAfterTheAppIsMovedAway() throws {
@@ -560,7 +560,7 @@ final class LidSleepHelperTests: XCTestCase {
         waitFor("It should stop keeping the Mac awake well within the heartbeat", timeout: 15) {
             (try? lines()) == ["disablesleep 1", "disablesleep 0"]
         }
-        XCTAssertEqual(try status().state, .appMissing)
+        waitFor("And report appMissing") { (try? status().state) == .appMissing }
     }
 
     func testEverySignalClearsTheFlagAndSaysSo() throws {

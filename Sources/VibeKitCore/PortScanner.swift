@@ -508,7 +508,8 @@ public final class PortScanner: @unchecked Sendable {
         guard !environment.isEmpty else { return true }
         if let xpc = environment.first(where: { $0.hasPrefix("XPC_SERVICE_NAME=") }) {
             let value = xpc.dropFirst("XPC_SERVICE_NAME=".count)
-            return !value.isEmpty && value != "0"
+            // LaunchServices tags GUI apps with `application.<bundle-id>.*`, which their detached children inherit.
+            return !value.isEmpty && value != "0" && !value.hasPrefix("application.")
         }
         return !environment.contains { $0.hasPrefix("TERM_PROGRAM=") || $0.hasPrefix("SSH_TTY=") || $0.hasPrefix("SHELL=") }
     }

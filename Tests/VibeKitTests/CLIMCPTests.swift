@@ -191,6 +191,32 @@ final class CLIMCPTests: XCTestCase {
         XCTAssertEqual(try installer.uninstall(), .conflict(link))
     }
 
+    func testSymlinkVersionResolvesEnclosingAppBundle() throws {
+        let dir = try temporaryDirectory()
+        let app = dir.appendingPathComponent("Vibe Kit.app", isDirectory: true)
+        let macOS = app.appendingPathComponent("Contents/MacOS", isDirectory: true)
+        try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true)
+        let binary = macOS.appendingPathComponent("VibeKit")
+        try Data("bin".utf8).write(to: binary)
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict>
+            <key>CFBundleIdentifier</key><string>dev.vibekit.VibeKit</string>
+            <key>CFBundleShortVersionString</key><string>9.8.7</string>
+        </dict></plist>
+        """
+        try Data(plist.utf8).write(to: app.appendingPathComponent("Contents/Info.plist"))
+        let bin = dir.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let link = bin.appendingPathComponent("vibekit")
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: binary.path)
+
+        XCTAssertEqual(CLIArguments.enclosingAppBundleURL(executableURL: link)?.standardizedFileURL,
+                       app.standardizedFileURL.resolvingSymlinksInPath())
+        XCTAssertEqual(CLIArguments.versionString(executableURL: link), "9.8.7")
+    }
+
     func testContainerStopIsRefusedAndPromptExpandsVariables() async throws {
         let dir = try temporaryDirectory()
         let container = Server(id: "container-abc123", pid: 900, rootPid: 900, listenerPids: [900],
