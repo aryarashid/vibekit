@@ -221,16 +221,10 @@ final class PanelTests: XCTestCase {
         XCTAssertTrue(panel.performKeyEquivalent(with: key("c", keyCode: 8, flags: .command)))
         XCTAssertEqual(pasteboard.string(forType: .string), "3000")
 
-        // ⇧⌘C still reaches the server's Copy URL shortcut instead of Edit › Copy. SwiftUI binds the
-        // shortcut to the filtered row on an update that can land after the resize the wait above
-        // watches, so on a slow runner the first press may find no row yet. Press until it copies.
-        let copyDeadline = Date().addingTimeInterval(3)
-        repeat {
-            XCTAssertTrue(panel.performKeyEquivalent(with: key("c", unmodified: "C", keyCode: 8, flags: [.command, .shift])))
-            if pasteboard.string(forType: .string) == "http://localhost:3000" { break }
-            pump(0.05)
-        } while Date() < copyDeadline
-        let state = "key \(panel.isKeyWindow), editor focused \(panel.firstResponder === editor), query \(editor.string)"
+        // ⇧⌘C still reaches the server's Copy URL shortcut instead of Edit › Copy. "3000" also matches a
+        // recent server on 3001, and the filtered rows move under the still pointer, which must not select one.
+        XCTAssertTrue(panel.performKeyEquivalent(with: key("c", unmodified: "C", keyCode: 8, flags: [.command, .shift])))
+        let state = "pointer \(NSEvent.mouseLocation), panel \(panel.frame), key \(panel.isKeyWindow), query \(editor.string)"
         XCTAssertEqual(pasteboard.string(forType: .string), "http://localhost:3000", state)
         XCTAssertEqual(store.toast?.message, "Copied http://localhost:3000", state)
 
