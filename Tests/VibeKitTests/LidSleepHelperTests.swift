@@ -187,27 +187,31 @@ final class LidSleepHelperTests: XCTestCase {
         try runHelper()
         try write("lid", "Yes")
         try write("now", "1000")
-        try runDaemonBriefly()
+        try runDaemon(until: "The helper should save when the lid closed") {
+            (try? lines("daemon-state"))?.contains("closed_at=1000") == true
+        }
         try write("now", String(1000 + 45 * 60))
-        try runDaemonBriefly()
-        XCTAssertTrue(try lines().contains("sleepnow"), "The restarted helper should keep counting from 1000")
+        try runDaemon(until: "The restarted helper should keep counting from 1000") {
+            (try? lines())?.contains("sleepnow") == true
+        }
     }
 
-    private func startDaemon() throws -> Process {
+    private func startDaemon(environment: [String: String] = [:]) throws -> Process {
         let process = Process()
         process.executableURL = helper
         process.environment = [
             "VIBEKIT_LID_FAKE_DIR": directory.path,
             "VIBEKIT_LID_CONFIG": directory.appendingPathComponent("config").path,
             "VIBEKIT_LID_STATE": directory.appendingPathComponent("daemon-state").path,
-        ]
+        ].merging(environment) { $1 }
         try process.run()
         return process
     }
 
-    private func runDaemonBriefly() throws {
+    /// Runs the daemon until it has done what is expected, then stops it as launchd would.
+    private func runDaemon(until what: String, _ condition: () -> Bool) throws {
         let process = try startDaemon()
-        Thread.sleep(forTimeInterval: 0.5)
+        waitFor(what, condition)
         process.terminate()
         process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0)
@@ -538,6 +542,25 @@ final class LidSleepHelperTests: XCTestCase {
         waitFor("The timer should end the countdown") { (try? lines())?.contains("sleepnow") == true }
         XCTAssertEqual(try lines(), ["disablesleep 0", "sleepnow"])
         XCTAssertEqual(try status().state, .slept)
+    }
+
+    func testTheDaemonStopsSoonAfterTheAppIsMovedAway() throws {
+        // The app lives outside the watched config folder, as it does on a real Mac.
+        let apps = FileManager.default.temporaryDirectory.appendingPathComponent("vibekit-apps-\(UUID())", isDirectory: true)
+        let app = apps.appendingPathComponent("Vibe Kit.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: apps) }
+        try write("app-path", app.path)
+        let daemon = try startDaemon(environment: ["VIBEKIT_LID_APP_FILE": directory.appendingPathComponent("app-path").path])
+        defer { daemon.terminate(); daemon.waitUntilExit() }
+        waitFor("The daemon should hold the flag on start") { (try? lines()) == ["disablesleep 1"] }
+
+        // Into the Trash. No config change and no lid event tells the helper; the watch on the app does.
+        try FileManager.default.moveItem(at: app, to: apps.appendingPathComponent("Trashed.app"))
+        waitFor("It should stop keeping the Mac awake well within the heartbeat", timeout: 15) {
+            (try? lines()) == ["disablesleep 1", "disablesleep 0"]
+        }
+        XCTAssertEqual(try status().state, .appMissing)
     }
 
     func testEverySignalClearsTheFlagAndSaysSo() throws {

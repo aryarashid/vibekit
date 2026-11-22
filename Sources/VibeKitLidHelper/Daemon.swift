@@ -89,6 +89,8 @@ final class Daemon: @unchecked Sendable {
             watchFiles()
             if folderWatch == nil { delay = min(delay ?? LidSleepEngine.heartbeat, LidSleepEngine.heartbeat) }
         }
+        // The app was away when its watch was last set up, and may be back.
+        if appWatch == nil { watchApp() }
         schedule(delay)
     }
 
@@ -144,7 +146,7 @@ final class Daemon: @unchecked Sendable {
     /// Watches the config folder, the config file and the app. Run again whenever one of them
     /// may have been replaced, because a watch follows the file it opened, not the name.
     private func watchFiles() {
-        for watch in [folderWatch, configWatch, appWatch] { watch?.cancel() }
+        for watch in [folderWatch, configWatch] { watch?.cancel() }
         let folder = system.config.split(separator: "/", omittingEmptySubsequences: false).dropLast().joined(separator: "/")
         // The installer removes the config and writes it again, so a new file can appear here.
         folderWatch = watch(folder.isEmpty ? "." : folder, flags: O_EVTONLY) { [self] _ in
@@ -156,8 +158,13 @@ final class Daemon: @unchecked Sendable {
             if !events.isDisjoint(with: [.delete, .rename, .revoke]) { watchFiles() }
             tick()
         }
-        // Moving the app to the Trash renames it. An update swaps it for a new one in an
-        // instant, so wait a moment before deciding it is gone.
+        watchApp()
+    }
+
+    /// Moving the app to the Trash renames it. An update swaps it for a new one in an instant,
+    /// so wait a moment before deciding it is gone.
+    private func watchApp() {
+        appWatch?.cancel()
         appWatch = system.appPath().flatMap { path in
             watch(String(decoding: path, as: UTF8.self), flags: O_EVTONLY) { [self] _ in
                 queue.asyncAfter(deadline: .now() + .seconds(3)) { [self] in
