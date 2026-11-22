@@ -130,3 +130,97 @@ public enum PromptLibrary {
         try encoder.encode(prompts).write(to: url, options: .atomic)
     }
 }
+
+/// Live values a prompt template can pull in when used.
+public struct PromptContext: Equatable, Sendable {
+    public var clipboard: String?
+    public var url: String?
+    public var port: String?
+    public var branch: String?
+    public var project: String?
+
+    public init(clipboard: String? = nil, url: String? = nil, port: String? = nil, branch: String? = nil, project: String? = nil) {
+        self.clipboard = clipboard
+        self.url = url
+        self.port = port
+        self.branch = branch
+        self.project = project
+    }
+
+    func value(for token: String) -> String? {
+        let raw: String? = switch token {
+        case "clipboard": clipboard
+        case "url": url
+        case "port": port
+        case "branch": branch
+        case "project": project
+        default: nil
+        }
+        guard let raw, !raw.isEmpty else { return nil }
+        return raw
+    }
+}
+
+/// Expands `{{variable}}` placeholders in saved prompts.
+public enum PromptVariables {
+    public static let supported: [String] = ["clipboard", "url", "port", "branch", "project"]
+    private static let supportedSet: Set<String> = Set(supported)
+
+    /// Expands known placeholders (`{{clipboard}}`, `{{url}}`, `{{port}}`, `{{branch}}`, `{{project}}`) in a single
+    /// pass so substituted text is never re-expanded. Unknown tokens and missing or empty values stay untouched.
+    public static func expand(_ template: String, context: PromptContext) -> String {
+        guard template.contains("{{") else { return template }
+        var output = ""
+        output.reserveCapacity(template.count)
+        var cursor = template.startIndex
+
+        while let open = template.range(of: "{{", range: cursor..<template.endIndex) {
+            output.append(contentsOf: template[cursor..<open.lowerBound])
+            let afterOpen = open.upperBound
+            guard let close = template.range(of: "}}", range: afterOpen..<template.endIndex) else {
+                output.append(contentsOf: template[open.lowerBound..<template.endIndex])
+                return output
+            }
+            // If another `{{` appears before `}}`, treat the earlier `{{` as literal text and try again from the inner one.
+            if let nested = template.range(of: "{{", range: afterOpen..<close.lowerBound) {
+                output.append(contentsOf: template[open.lowerBound..<nested.lowerBound])
+                cursor = nested.lowerBound
+                continue
+            }
+            let name = String(template[afterOpen..<close.lowerBound])
+            if let value = context.value(for: name) {
+                output.append(value)
+            } else {
+                output.append(contentsOf: template[open.lowerBound..<close.upperBound])
+            }
+            cursor = close.upperBound
+        }
+
+        output.append(contentsOf: template[cursor..<template.endIndex])
+        return output
+    }
+
+    /// Unique known placeholder names present in `template`, in order of first appearance.
+    public static func tokens(in template: String) -> [String] {
+        guard template.contains("{{") else { return [] }
+        var found: [String] = []
+        var seen: Set<String> = []
+        var cursor = template.startIndex
+
+        while let open = template.range(of: "{{", range: cursor..<template.endIndex) {
+            let afterOpen = open.upperBound
+            guard let close = template.range(of: "}}", range: afterOpen..<template.endIndex) else { break }
+            if let nested = template.range(of: "{{", range: afterOpen..<close.lowerBound) {
+                cursor = nested.lowerBound
+                continue
+            }
+            let name = String(template[afterOpen..<close.lowerBound])
+            if supportedSet.contains(name), seen.insert(name).inserted {
+                found.append(name)
+            }
+            cursor = close.upperBound
+        }
+
+        return found
+    }
+}

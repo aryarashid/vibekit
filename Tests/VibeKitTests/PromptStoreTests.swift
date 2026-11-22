@@ -59,4 +59,29 @@ final class PromptStoreTests: XCTestCase {
         store.reloadIfChanged()
         XCTAssertEqual(store.prompt(prompt.id)?.text, "Much longer external edit")
     }
+
+    func testClipboardSnapshotRestoresOnlyWhenUnchanged() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+
+        pasteboard.clearContents()
+        pasteboard.setString("original clipboard", forType: .string)
+
+        let store = PromptStore(persists: false)
+        store.copyForPaste("expanded prompt", restore: true, pasteboard: pasteboard)
+        XCTAssertEqual(pasteboard.string(forType: .string), "expanded prompt")
+
+        let snapshot = store.takePendingClipboardRestore()
+        XCTAssertNotNil(snapshot)
+        XCTAssertTrue(snapshot?.restore(to: pasteboard) == true)
+        XCTAssertEqual(pasteboard.string(forType: .string), "original clipboard")
+
+        // If the user copies something else before restore runs, do not clobber it.
+        store.copyForPaste("another prompt", restore: true, pasteboard: pasteboard)
+        let second = store.takePendingClipboardRestore()
+        pasteboard.clearContents()
+        pasteboard.setString("user copied meanwhile", forType: .string)
+        XCTAssertTrue(second?.restore(to: pasteboard) == false)
+        XCTAssertEqual(pasteboard.string(forType: .string), "user copied meanwhile")
+    }
 }

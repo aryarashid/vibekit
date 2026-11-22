@@ -384,6 +384,14 @@ struct ServerListPage: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 260)
+                if !free {
+                    let command = "sudo lsof -nP -iTCP:\(port) -sTCP:LISTEN"
+                    PillButton(title: "Copy sudo lsof", symbol: "doc.on.doc") {
+                        store.copy(command, label: "lsof command")
+                    }
+                    .help(command)
+                    .padding(.top, 4)
+                }
             } else {
                 Text("No matches for “\(query)”")
                     .font(.system(size: 13, weight: .semibold))
@@ -418,6 +426,9 @@ struct ServerListPage: View {
                     summary(dev)
                 }
                 Spacer(minLength: 6)
+                if store.toast == nil && (store.settings.lidStayAwake || store.settings.lidHelperPaused) {
+                    LidSleepIndicator(settings: store.settings) { route = .settings }
+                }
                 if !dev.isEmpty && store.toast == nil {
                     stopAllButton(count: dev.count)
                 }
@@ -563,7 +574,7 @@ struct ServerListPage: View {
     private func activate(_ target: Item?) {
         switch target {
         case .server(let server):
-            if server.category == .dev && server.framework.speaksHTTP {
+            if server.opensInBrowser {
                 store.open(server)
                 close()
             } else if server.framework.urlScheme != nil || (server.category == .database && server.localURL != nil) {

@@ -17,6 +17,10 @@ final class Settings {
     var promptsHotKeyEnabled: Bool { didSet { defaults.set(promptsHotKeyEnabled, forKey: "promptsHotKeyEnabled") } }
     /// Paste a prompt into the app in front when you pick it, not only copy it. Needs Accessibility access.
     var pasteOnUse: Bool { didSet { defaults.set(pasteOnUse, forKey: "pasteOnUse") } }
+    /// Put back whatever was on the clipboard after pasting a prompt into the front app.
+    var restoreClipboardAfterPaste: Bool { didSet { defaults.set(restoreClipboardAfterPaste, forKey: "restoreClipboardAfterPaste") } }
+    /// Servers opted out of HTTP status checks, keyed by `Server.httpCheckKey`.
+    var skippedHTTPChecks: Set<String> { didSet { defaults.set(Array(skippedHTTPChecks).sorted(), forKey: "skippedHTTPChecks") } }
     /// The tab the panel showed last, so a click on the icon returns to it.
     var lastTab: PanelTab { didSet { defaults.set(lastTab.rawValue, forKey: "lastTab") } }
     var editorID: String? { didSet { defaults.set(editorID, forKey: "editorID") } }
@@ -46,12 +50,19 @@ final class Settings {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        defaults.register(defaults: ["showCountInMenuBar": true, "hotKeyEnabled": true, "promptsHotKeyEnabled": true])
+        defaults.register(defaults: [
+            "showCountInMenuBar": true,
+            "hotKeyEnabled": true,
+            "promptsHotKeyEnabled": true,
+            "restoreClipboardAfterPaste": true,
+        ])
         showOtherListeners = defaults.bool(forKey: "showOtherListeners")
         showCountInMenuBar = defaults.bool(forKey: "showCountInMenuBar")
         hotKeyEnabled = defaults.bool(forKey: "hotKeyEnabled")
         promptsHotKeyEnabled = defaults.bool(forKey: "promptsHotKeyEnabled")
         pasteOnUse = defaults.bool(forKey: "pasteOnUse")
+        restoreClipboardAfterPaste = defaults.bool(forKey: "restoreClipboardAfterPaste")
+        skippedHTTPChecks = Set(defaults.stringArray(forKey: "skippedHTTPChecks") ?? [])
         lastTab = defaults.string(forKey: "lastTab").flatMap(PanelTab.init(rawValue:)) ?? .servers
         editorID = defaults.string(forKey: "editorID")
         terminalID = defaults.string(forKey: "terminalID")
@@ -131,8 +142,28 @@ final class Settings {
         let state = LidSleep.helperState()
         let minutes = LidSleep.readMinutes()
         let loaded = state != .missing && LidSleep.isLoaded()
-        let flags = Self.lidFlags(state: state, loaded: loaded, minutes: minutes,
-                                  appExists: state == .missing || LidSleep.installedAppExists())
+        let appExists = state == .missing || LidSleep.installedAppExists()
+        applyLidStayAwake(state: state, minutes: minutes, loaded: loaded, appExists: appExists)
+    }
+
+    /// Refreshes lid sleep state without blocking launch. When no helper files exist, no `launchctl` process runs.
+    func refreshLidStayAwakeLazily() {
+        guard LidSleep.isSupported else { return }
+        let state = LidSleep.helperState()
+        let minutes = LidSleep.readMinutes()
+        guard state != .missing else {
+            applyLidStayAwake(state: state, minutes: minutes, loaded: false, appExists: true)
+            return
+        }
+        let appExists = LidSleep.installedAppExists()
+        Task { [weak self] in
+            let loaded = await Task.detached(priority: .utility) { LidSleep.isLoaded() }.value
+            self?.applyLidStayAwake(state: state, minutes: minutes, loaded: loaded, appExists: appExists)
+        }
+    }
+
+    private func applyLidStayAwake(state: LidSleep.HelperState, minutes: Int, loaded: Bool, appExists: Bool) {
+        let flags = Self.lidFlags(state: state, loaded: loaded, minutes: minutes, appExists: appExists)
         if lidStayAwake != flags.on { lidStayAwake = flags.on }
         if lidHelperInstalled != (state != .missing) { lidHelperInstalled = state != .missing }
         if lidHelperPaused != flags.paused { lidHelperPaused = flags.paused }

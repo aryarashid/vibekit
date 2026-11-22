@@ -298,3 +298,25 @@ struct KeyCap: View {
             .overlay(RoundedRectangle(cornerRadius: 4.5, style: .continuous).strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
     }
 }
+
+/// Quiet footer icon shown only while lid stay-awake is active or paused.
+struct LidSleepIndicator: View {
+    let settings: Settings
+    let openSettings: () -> Void
+
+    var body: some View {
+        let paused = settings.lidHelperPaused && !settings.lidStayAwake
+        Button(action: openSettings) {
+            Image(systemName: paused ? "moon.zzz" : "moon.fill")
+                .font(.system(size: 10.5, weight: .medium))
+                .frame(width: 22, height: 22)
+        }
+        .buttonStyle(PanelButtonStyle(ink: paused ? Theme.warning : Theme.readout,
+                                     hoverInk: paused ? Theme.warning : .primary,
+                                     tint: paused ? Theme.warning : .primary))
+        .help(paused ? "Lid sleep helper is paused. Click to open Settings."
+                     : "Staying awake for \(settings.lidSleepMinutes)m after lid close")
+        .accessibilityLabel(paused ? "Lid sleep helper paused"
+                                   : "Staying awake for \(settings.lidSleepMinutes) minutes after lid close")
+    }
+}

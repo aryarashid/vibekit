@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         store.start()
         settings.enableLaunchAtLoginOnFirstRun()
+        settings.refreshLidStayAwakeLazily()
         applyHotKey()
         observeSettings()
         // `VibeKit --toggle` opens or closes the panel of the running copy, for scripts and launchers.
@@ -70,11 +71,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleRequested(_ notification: Notification) {
         let tab = (notification.userInfo?["tab"] as? String).flatMap(PanelTab.init(rawValue:))
-        if let query = notification.userInfo?["query"] as? String {
-            panel.show(from: statusItem.button, tab: tab, query: query)
-        } else {
-            panel.toggle(from: statusItem.button, tab: tab)
-        }
+        let query = notification.userInfo?["query"] as? String
+        panel.toggle(from: statusItem.button, tab: tab, query: query)
     }
 
     private func observeSettings() {
@@ -137,6 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showMenu() {
         panel.close()
         settings.refreshLaunchAtLogin()
+        if LidSleep.isSupported { settings.refreshLidStayAwake() }
         let menu = NSMenu()
         menu.autoenablesItems = false
         let open = NSMenuItem(title: "Open Vibe Kit", action: #selector(openPanel), keyEquivalent: "")
@@ -148,6 +147,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let note = updater.statusNote { update.toolTip = note }
         menu.addItem(update)
         menu.addItem(.separator())
+        if LidSleep.isSupported {
+            let lid = NSMenuItem(title: "Stay Awake on Lid Close (\(settings.lidSleepMinutes)m)",
+                                 action: #selector(toggleLidStayAwake), keyEquivalent: "")
+            lid.target = self
+            lid.state = settings.lidStayAwake ? .on : .off
+            lid.isEnabled = !settings.lidHelperBusy
+            menu.addItem(lid)
+        }
         let login = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         login.target = self
         login.state = settings.launchAtLogin ? .on : .off
@@ -165,6 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openPanel() { panel.show(from: statusItem.button) }
     @objc private func checkForUpdates() { updater.checkForUpdates() }
+    @objc private func toggleLidStayAwake() { Task { await settings.setLidStayAwake(!settings.lidStayAwake) } }
     @objc private func toggleLaunchAtLogin() { settings.setLaunchAtLogin(!settings.launchAtLogin) }
     @objc private func openLogs() {
         try? FileManager.default.createDirectory(at: ServerStore.logsDirectory, withIntermediateDirectories: true)

@@ -34,7 +34,7 @@ extension ServerStore {
         case .database, .service:
             return busy ? .busy : .up
         case .dev:
-            guard server.framework.speaksHTTP else { return busy ? .busy : .up }
+            guard server.framework.speaksHTTP, !settings.skippedHTTPChecks.contains(server.httpCheckKey) else { return busy ? .busy : .up }
             if unanswered.contains(server.id) { return .silent }
             guard let page = pages[server.id] else { return .waiting }
             if page.status >= 500 { return .failing }

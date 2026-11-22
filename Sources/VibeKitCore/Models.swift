@@ -59,6 +59,20 @@ public struct Project: Hashable, Sendable {
     /// The folder the server runs from: the root plus the subpath. Two checkouts with the same name differ here.
     public var folder: String { subpath.map { (root as NSString).appendingPathComponent($0) } ?? root }
 
+    /// Concise name for a linked worktree, stripping `<project>-` (or `_` / `.`) when present.
+    public var worktreeSlug: String? {
+        guard let worktree, !worktree.isEmpty else { return nil }
+        let lower = worktree.lowercased()
+        let prefix = name.lowercased()
+        for separator in ["-", "_", "."] {
+            let full = prefix + separator
+            if lower.hasPrefix(full), worktree.count > full.count {
+                return String(worktree.dropFirst(full.count))
+            }
+        }
+        return worktree
+    }
+
     public init(name: String, root: String, subpath: String?, branch: String?, worktree: String?) {
         self.name = name
         self.root = root
@@ -199,11 +213,8 @@ public struct Server: Identifiable, Hashable, Sendable {
     /// `node node_modules/.bin/vite`, which may not be on PATH.
     public var copyableCommand: String { launch?.displayCommand ?? command }
 
-    /// How this Mac reaches the primary port: `localhost`, unless the server listens on one other address only.
-    public var host: String {
-        guard let binding = ports.first else { return "localhost" }
-        return host(for: binding)
-    }
+    /// Stable key for per-server HTTP check preferences.
+    public var httpCheckKey: String { launch?.signature ?? "\(directory ?? processName):\(primaryPort)" }
 
     /// How this Mac reaches `binding`. `localhost` covers loopback and all-interfaces listeners. With
     /// `explicitLoopback`, those name the address family instead (`127.0.0.1` or `[::1]`), for when two processes
@@ -217,31 +228,56 @@ public struct Server: Identifiable, Hashable, Sendable {
         return binding.isIPv6 ? "[\(address)]" : address
     }
 
+    /// How this Mac reaches the primary port: `localhost`, unless the server listens on one other address only.
+    public var host: String {
+        guard let binding = ports.first else { return "localhost" }
+        return host(for: binding)
+    }
+
     public var localURL: URL? { localURL(secure: false) }
 
     /// `secure` when the server answered over HTTPS only, such as Vite with a local certificate.
     public func localURL(secure: Bool) -> URL? {
-        localURL(for: primaryPort, secure: secure)
+        if let binding = ports.first {
+            return localURL(for: binding, secure: secure)
+        }
+        return localURL(for: primaryPort, secure: secure)
+    }
+
+    /// Local URL for a specific port binding on this server. A port in `framework.preferredPorts` is a
+    /// web UI and gets `http://`, even on a tool whose other ports take a connection string, such as RabbitMQ's 15672.
+    public func localURL(for binding: PortBinding, secure: Bool = false, explicitLoopback: Bool = false) -> URL? {
+        let host = host(for: binding, explicitLoopback: explicitLoopback)
+        let webUI = framework.preferredPorts.contains(binding.port)
+        if let scheme = framework.urlScheme, !webUI {
+            return URL(string: "\(scheme)://\(host):\(binding.port)")
+        }
+        guard framework.speaksHTTP || webUI else { return nil }
+        return URL(string: "\(secure ? "https" : "http")://\(host):\(binding.port)")
     }
 
     /// The URL for one of this server's ports, for a clickable pill per port. A port in `framework.preferredPorts` is a
     /// web UI and gets `http://`, even on a tool whose other ports take a connection string, such as RabbitMQ's 15672.
     public func localURL(for port: UInt16, secure: Bool = false, explicitLoopback: Bool = false) -> URL? {
-        let host = ports.first { $0.port == port }.map { self.host(for: $0, explicitLoopback: explicitLoopback) } ?? "localhost"
+        if let binding = ports.first(where: { $0.port == port }) {
+            return localURL(for: binding, secure: secure, explicitLoopback: explicitLoopback)
+        }
         let webUI = framework.preferredPorts.contains(port)
         if let scheme = framework.urlScheme, !webUI {
-            return URL(string: "\(scheme)://\(host):\(port)")
+            return URL(string: "\(scheme)://localhost:\(port)")
         }
         guard framework.speaksHTTP || webUI else { return nil }
-        return URL(string: "\(secure ? "https" : "http")://\(host):\(port)")
+        return URL(string: "\(secure ? "https" : "http")://localhost:\(port)")
     }
 
     /// A dev server, admin UI or app page worth opening in a browser. Connection strings and plain listeners are not.
     public var canOpenInBrowser: Bool { framework.speaksHTTP && framework.urlScheme == nil && category != .other }
 
+    /// Whether clicking this server opens a web browser (dev servers and HTTP services/databases without a custom scheme).
+    public var opensInBrowser: Bool { canOpenInBrowser }
+
     /// False once the folder the server ran from was deleted, such as a removed worktree. True when there is none.
     public var directoryExists: Bool { directory.map { FileManager.default.fileExists(atPath: $0) } ?? true }
-
     /// The URL for another device: the primary port if it is open to the network, else the first port that is.
     /// `host` is an IPv4 address, so an IPv6-only listener gets none.
     public func networkURL(host: String?, secure: Bool = false) -> URL? {

@@ -64,6 +64,9 @@ struct SettingsPage: View {
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
                         }
+                        if settings.pasteOnUse {
+                            toggle("Restore clipboard after pasting", isOn: $settings.restoreClipboardAfterPaste)
+                        }
                         HStack {
                             Text("Prompts file").font(.system(size: 12.5))
                             Text("prompts.json").font(Theme.monoSmall).foregroundStyle(Theme.readout)

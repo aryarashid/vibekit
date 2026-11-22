@@ -101,16 +101,22 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     /// Opens on `tab`, or on the tab used last. A second press of the same shortcut closes the panel;
-    /// a different tab's shortcut switches to it.
-    func toggle(from button: NSStatusBarButton?, tab: PanelTab? = nil) {
+    /// a different tab's shortcut or a non-empty `query` switches to it.
+    func toggle(from button: NSStatusBarButton?, tab: PanelTab? = nil, query: String? = nil) {
         if isVisible {
-            if let tab, tab != store.settings.lastTab { show(from: button, tab: tab) } else { close() }
+            let switchingTab = tab != nil && tab != store.settings.lastTab
+            let hasQuery = query.map { !$0.isEmpty } ?? false
+            if switchingTab || hasQuery {
+                show(from: button, tab: tab, query: query)
+            } else {
+                close()
+            }
         } else {
-            show(from: button, tab: tab)
+            show(from: button, tab: tab, query: query)
         }
     }
 
-    func show(from button: NSStatusBarButton?, tab: PanelTab? = nil, route: Route = .list, query: String = "") {
+    func show(from button: NSStatusBarButton?, tab: PanelTab? = nil, route: Route = .list, query: String? = nil) {
         if let button { statusButton = button }
         if prewarming {
             prewarming = false
@@ -127,7 +133,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         var initial = PanelRootView.InitialState()
         initial.tab = tab ?? store.settings.lastTab
         initial.route = route
-        initial.query = query
+        if let query { initial.query = query }
         // The view only reports tab changes made inside it. `toggle` needs to know the tab it opened on.
         store.settings.lastTab = initial.tab
         // Reuse the AppKit window and hosting infrastructure, but give each opening fresh view state.
@@ -181,16 +187,26 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     /// Closes, and pastes the prompt the list just copied into the app in front when that is on and allowed.
     private func use(_ prompt: Prompt) {
-        guard store.settings.pasteOnUse && PromptStore.canPaste else { return close() }
+        guard store.settings.pasteOnUse && PromptStore.canPaste else {
+            prompts.clearPendingClipboardRestore()
+            return close()
+        }
+        let restore = prompts.takePendingClipboardRestore()
         close { [weak self] in
             guard let self else { return }
             let open = self.opens
             // Give the app in front a moment to take keyboard focus back from the panel.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-                MainActor.assumeIsolated {
-                    // Opened again meanwhile: the keystroke would land in the panel, not the app the prompt was for.
-                    guard let self, self.opens == open, !self.panel.isVisible else { return }
-                    PromptStore.pasteIntoFrontApp()
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(50))
+                // Opened again meanwhile: the keystroke would land in the panel, not the app the prompt was for.
+                guard let self, self.opens == open, !self.panel.isVisible else {
+                    restore?.restore()
+                    return
+                }
+                PromptStore.pasteIntoFrontApp()
+                if let restore {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    restore.restore()
                 }
             }
         }

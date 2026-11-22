@@ -205,4 +205,23 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(result.status, 1)
         XCTAssertEqual(result.files, [])
     }
+
+    @MainActor
+    func testRestoreClipboardAndSkippedHTTPChecksPersist() {
+        let suite = "VibeKitTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let first = Settings(defaults: defaults)
+        XCTAssertTrue(first.restoreClipboardAfterPaste, "restoreClipboardAfterPaste defaults to true")
+        XCTAssertTrue(first.skippedHTTPChecks.isEmpty)
+
+        first.restoreClipboardAfterPaste = false
+        first.skippedHTTPChecks.insert("/tmp/app\u{0}npm run dev")
+        first.skippedHTTPChecks.insert("worker:9000")
+
+        let reloaded = Settings(defaults: defaults)
+        XCTAssertFalse(reloaded.restoreClipboardAfterPaste)
+        XCTAssertEqual(reloaded.skippedHTTPChecks, ["/tmp/app\u{0}npm run dev", "worker:9000"])
+    }
 }

@@ -97,6 +97,8 @@ final class ServerStore {
     private(set) var pending: [String: Pending] = [:]
     private(set) var toast: Toast?
     private(set) var hasScanned = false
+    /// Managed servers that crashed while the panel was closed, cleared on the next open.
+    private(set) var unreadCrashes = 0
 
     let settings: Settings
     @ObservationIgnored private let persistenceDirectory: URL
@@ -109,6 +111,19 @@ final class ServerStore {
             guard isPanelOpen != oldValue else { return }
             if isPanelOpen {
                 lanAddress = Network.lanAddress()
+                if unreadCrashes > 0 {
+                    let count = unreadCrashes
+                    let last = lastCrashNotice
+                    unreadCrashes = 0
+                    lastCrashNotice = nil
+                    let message: String
+                    if count == 1, let last {
+                        message = "\(last.title) crashed (exit \(last.code)). Check Recently Stopped."
+                    } else {
+                        message = "\(count) servers crashed while closed. Check Recently Stopped."
+                    }
+                    show(Toast(message: message, isError: true))
+                }
                 // Ask again, once, about servers that were failing or silent last time, or not asked for a while,
                 // so a server that started failing since does not stay green.
                 let stale = Date().addingTimeInterval(-300)
@@ -144,6 +159,7 @@ final class ServerStore {
     @ObservationIgnored private var recentPids: [Int32: String] = [:]
     /// Servers Vibe Kit started this session, by PID, until they exit.
     @ObservationIgnored private var launches: [Int32: Launch] = [:]
+    @ObservationIgnored private var lastCrashNotice: (title: String, code: Int32)?
 
     private struct Launch {
         let pendingID: String
@@ -184,6 +200,10 @@ final class ServerStore {
     func start() {
         schedule()
         scanNow(fullSweep: true)
+        guard !isDemo else { return }
+        let directory = logsDirectory
+        let keep = Set(managed.values.map { $0.log.standardizedFileURL } + recents.compactMap { $0.log?.standardizedFileURL })
+        queue.async { Self.pruneLogs(in: directory, keep: keep) }
     }
 
     private var scanCategories: Set<ServerCategory> {
@@ -328,40 +348,130 @@ final class ServerStore {
     private func probeNewServers() {
         let now = Date()
         for server in servers where server.category == .dev && server.framework.speaksHTTP
+            && !settings.skippedHTTPChecks.contains(server.httpCheckKey)
             && (pages[server.id] == nil || staleProbes.contains(server.id)) && !probing.contains(server.id)
             && (retryAt[server.id].map { $0 <= now } ?? true) {
-            probing.insert(server.id)
             staleProbes.remove(server.id)
-            let id = server.id
-            let host = server.host
-            let port = server.primaryPort
-            Task {
-                let page = await Probe.page(host: host, port: port)
-                self.probing.remove(id)
-                guard self.servers.contains(where: { $0.id == id }) else { return }
-                self.probedAt[id] = Date()
-                if let page {
-                    if self.pages[id] != page { self.pages[id] = page }
-                    self.unanswered.remove(id)
-                    self.probeAttempts[id] = nil
-                } else {
-                    let attempts = (self.probeAttempts[id] ?? 0) + 1
-                    self.probeAttempts[id] = attempts
-                    // A server that is still compiling gets another try within seconds.
-                    let delays: [TimeInterval] = [2, 4, 8, 15, 30, 60]
-                    self.retryAt[id] = Date().addingTimeInterval(delays[min(attempts - 1, delays.count - 1)])
-                    if attempts >= 2 || self.pages[id] != nil { self.unanswered.insert(id) }
-                    // A cached page would stop the retries, so keep the server due for another look.
-                    if self.pages[id] != nil { self.staleProbes.insert(id) }
-                }
+            probe(server)
+        }
+    }
+
+    private func probe(_ server: Server) {
+        guard !isDemo, !probing.contains(server.id) else { return }
+        probing.insert(server.id)
+        let id = server.id
+        let host = host(for: server)
+        let port = server.primaryPort
+        Task {
+            let page = await Probe.page(host: host, port: port)
+            self.probing.remove(id)
+            guard self.servers.contains(where: { $0.id == id }) else { return }
+            self.probedAt[id] = Date()
+            if let page {
+                if self.pages[id] != page { self.pages[id] = page }
+                self.unanswered.remove(id)
+                self.probeAttempts[id] = nil
+            } else {
+                let attempts = (self.probeAttempts[id] ?? 0) + 1
+                self.probeAttempts[id] = attempts
+                // A server that is still compiling gets another try within seconds.
+                let delays: [TimeInterval] = [2, 4, 8, 15, 30, 60]
+                self.retryAt[id] = Date().addingTimeInterval(delays[min(attempts - 1, delays.count - 1)])
+                if attempts >= 2 || self.pages[id] != nil { self.unanswered.insert(id) }
+                // A cached page would stop the retries, so keep the server due for another look.
+                if self.pages[id] != nil { self.staleProbes.insert(id) }
             }
         }
     }
 
+    /// Forces an immediate single HTTP status probe for `server`.
+    func reprobe(_ server: Server) {
+        guard server.framework.speaksHTTP else { return }
+        unanswered.remove(server.id)
+        retryAt[server.id] = nil
+        probeAttempts[server.id] = nil
+        staleProbes.remove(server.id)
+        probe(server)
+    }
+
+    /// Opts a server out of (or back into) HTTP status checks.
+    func toggleSkipHTTP(_ server: Server) {
+        let key = server.httpCheckKey
+        if settings.skippedHTTPChecks.contains(key) {
+            settings.skippedHTTPChecks.remove(key)
+            reprobe(server)
+        } else {
+            settings.skippedHTTPChecks.insert(key)
+            unanswered.remove(server.id)
+            pages[server.id] = nil
+            staleProbes.remove(server.id)
+            retryAt[server.id] = nil
+            probeAttempts[server.id] = nil
+        }
+    }
+
+    // MARK: Prompt Context
+
+    /// The best active dev server to populate prompt variables: a failing dev server first,
+    /// otherwise the single or most recently started dev server.
+    var contextServer: Server? {
+        let dev = devServers
+        guard !dev.isEmpty else { return nil }
+        let failing = dev.filter { light(for: $0) == .failing }
+        if !failing.isEmpty {
+            return failing.max { $0.startDate < $1.startDate }
+        }
+        if dev.count == 1 { return dev[0] }
+        return dev.max { $0.startDate < $1.startDate }
+    }
+
+    func promptContext(clipboard: String?) -> PromptContext {
+        let server = contextServer
+        let cleanClipboard = clipboard.flatMap { $0.isEmpty ? nil : $0 }
+        return PromptContext(
+            clipboard: cleanClipboard,
+            url: server.flatMap { url(for: $0)?.absoluteString },
+            port: server.map { String($0.primaryPort) },
+            branch: server?.project?.branch,
+            project: server?.project?.name ?? server?.title
+        )
+    }
+
+    // MARK: Shared Ports
+
+    func otherServers(sharingPort port: UInt16, with server: Server) -> [Server] {
+        servers.filter { other in
+            other.id != server.id && other.ports.contains { $0.port == port && ($0.isWildcard || $0.isLocalhost) }
+        }
+    }
+
+    /// Tag label for a port shared with another listener, naming the address family when it distinguishes this server.
+    func sharedPortLabel(for server: Server, binding: PortBinding) -> String {
+        if !binding.isIPv6 { return "shared · IPv4" }
+        if !binding.acceptsIPv4 { return "shared · IPv6" }
+        let others = otherServers(sharingPort: binding.port, with: server)
+        let allOthersIPv4 = !others.isEmpty && others.allSatisfy { other in
+            other.ports.first { $0.port == binding.port }.map { !$0.isIPv6 } ?? false
+        }
+        return allOthersIPv4 ? "shared · IPv6" : "shared port"
+    }
+
     // MARK: Actions
 
+    /// Host for reaching a server binding, using explicit `127.0.0.1` / `[::1]` when another server shares the port.
+    func host(for server: Server, binding: PortBinding? = nil) -> String {
+        guard let target = binding ?? server.ports.first else { return server.host }
+        return server.host(for: target, explicitLoopback: sharedPorts.contains(target.port))
+    }
+
     /// The server's address on this Mac, over HTTPS when that is all it answered.
-    func url(for server: Server) -> URL? { server.localURL(secure: pages[server.id]?.isSecure ?? false) }
+    func url(for server: Server, binding: PortBinding? = nil) -> URL? {
+        guard let target = binding ?? server.ports.first else {
+            return server.localURL(secure: pages[server.id]?.isSecure ?? false)
+        }
+        let secure = target.port == server.primaryPort && (pages[server.id]?.isSecure ?? false)
+        return server.localURL(for: target, secure: secure, explicitLoopback: sharedPorts.contains(target.port))
+    }
 
     /// The probe only asks the primary port, so its HTTPS answer applies only when that is the port shared on the network.
     func networkURL(for server: Server) -> URL? {
@@ -370,8 +480,8 @@ final class ServerStore {
         return server.networkURL(host: lanAddress, secure: secure)
     }
 
-    func open(_ server: Server) {
-        guard let url = url(for: server) else { return }
+    func open(_ server: Server, binding: PortBinding? = nil) {
+        guard let url = url(for: server, binding: binding) else { return }
         NSWorkspace.shared.open(url)
     }
 
@@ -549,6 +659,7 @@ final class ServerStore {
         var reason = reason
         if reason == .exited, let code = exitCodes.removeValue(forKey: server.rootPid), Self.isCrash(code) {
             reason = .crashed(code: code)
+            recordCrash(title: server.title, code: code)
         }
         guard Self.isWorthRemembering(reason: reason, lifetime: Date().timeIntervalSince(server.startDate), managed: log != nil) else { return }
         let recent = RecentServer(server, launch: launch, reason: reason, log: log)
@@ -587,6 +698,7 @@ final class ServerStore {
             let crashed = Self.isCrash(code)
             add(launch.entry.stopped(crashed ? .crashed(code: code) : .exited, log: launch.log))
             let title = launch.entry.title
+            if crashed { recordCrash(title: title, code: code) }
             show(Toast(message: crashed ? "\(title) exited with code \(code). Check its log." : "\(title) exited before it opened a port.",
                        isError: true))
             schedule()
@@ -595,10 +707,39 @@ final class ServerStore {
         guard Self.isCrash(code) else { return }
         if let recentID, let index = recents.firstIndex(where: { $0.id == recentID }), recents[index].reason == .exited {
             recents[index].reason = .crashed(code: code)
+            recordCrash(title: recents[index].title, code: code)
             saveRecents()
         } else if recentID == nil {
             exitCodes[pid] = code
             if exitCodes.count > 32, let old = exitCodes.keys.first(where: { $0 != pid }) { exitCodes[old] = nil }
+        }
+    }
+
+    func recordCrash(title: String, code: Int32) {
+        guard !isPanelOpen else { return }
+        unreadCrashes += 1
+        lastCrashNotice = (title, code)
+    }
+
+    /// Keeps the newest `maxCount` logs and drops files older than `maxAge` that are not referenced by `keep`.
+    nonisolated static func pruneLogs(in directory: URL, keep: Set<URL>, maxCount: Int = 50,
+                                      maxAge: TimeInterval = 30 * 86_400, now: Date = Date()) {
+        let fm = FileManager.default
+        guard let urls = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+                                                     options: [.skipsHiddenFiles]) else { return }
+        let logs: [(url: URL, modified: Date)] = urls.compactMap { url in
+            guard url.pathExtension == "log",
+                  let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey]),
+                  values.isRegularFile == true else { return nil }
+            return (url, values.contentModificationDate ?? .distantPast)
+        }.sorted { $0.modified > $1.modified }
+
+        let protected = Set(keep.map(\.standardizedFileURL))
+        for (index, entry) in logs.enumerated() {
+            if protected.contains(entry.url.standardizedFileURL) { continue }
+            if index >= maxCount || now.timeIntervalSince(entry.modified) > maxAge {
+                try? fm.removeItem(at: entry.url)
+            }
         }
     }
 
@@ -644,6 +785,13 @@ final class ServerStore {
         self.pages = pages
         self.history = history
         self.recents = recents
+        var owners: [UInt16: Set<String>] = [:]
+        for server in servers {
+            for binding in server.ports where binding.isWildcard || binding.isLocalhost {
+                owners[binding.port, default: []].insert(server.id)
+            }
+        }
+        sharedPorts = Set(owners.filter { $0.value.count > 1 }.keys)
         lanAddress = "192.168.1.24"
         hasScanned = true
     }
