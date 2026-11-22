@@ -1,43 +1,50 @@
 import AppKit
 
-let arguments = ProcessInfo.processInfo.arguments
-
-if arguments.contains("--list") {
-    // `VibeKit --list` prints what the menu would show, for scripts and debugging.
-    ListCommand.run(all: arguments.contains("--all"))
-    exit(0)
-}
-
-if arguments.contains("--toggle") {
-    // Scripts can tell when nothing heard the request.
-    let running = NSWorkspace.shared.runningApplications.contains {
-        ($0.bundleIdentifier == "dev.vibekit.VibeKit" || $0.executableURL?.lastPathComponent == "VibeKit")
-            && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+let arguments = Array(ProcessInfo.processInfo.arguments.dropFirst())
+func failCLI(_ error: Error, json: Bool = false) -> Never {
+    let message = error.localizedDescription
+    if json, let data = try? JSONSerialization.data(withJSONObject: ["error": message]) {
+        FileHandle.standardOutput.write(data + Data([10]))
+    } else {
+        FileHandle.standardError.write(Data((message + "\n").utf8))
     }
-    guard running else {
-        FileHandle.standardError.write(Data("Vibe Kit is not running. Open it first.\n".utf8))
-        exit(1)
+    exit((error as? CLIError)?.code ?? 1)
+}
+
+do {
+    switch try CLIArguments.parse(arguments) {
+    case .help: print(CLIArguments.usage)
+    case .version: print("VibeKit \(CLIArguments.versionString)")
+    case .mcp(let allowControl):
+        Task.detached { await MCPServer(allowControl: allowControl).run(); exit(0) }
+        dispatchMain()
+    case .action(let action, let json):
+        Task.detached {
+            do {
+                let output = try await ListCommand().run(action, format: json ? .json : .text)
+                FileHandle.standardOutput.write(Data(output.text.utf8))
+                exit(output.exitCode)
+            } catch { failCLI(error, json: json) }
+        }
+        dispatchMain()
+    case .toggle(let tab, let query):
+        let running = NSWorkspace.shared.runningApplications.contains {
+            ($0.bundleIdentifier == "dev.vibekit.VibeKit" || $0.executableURL?.lastPathComponent == "VibeKit")
+                && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+        }
+        guard running else { throw CLIError("Vibe Kit is not running. Open it first.") }
+        var info: [String: String] = [:]
+        info["tab"] = tab
+        info["query"] = query
+        DistributedNotificationCenter.default().postNotificationName(
+            AppDelegate.toggleNotification, object: nil, userInfo: info, deliverImmediately: true)
+    case .bench(let seconds, let open): Bench.run(seconds: seconds, panelOpen: open)
+    case .snapshot(let path): Snapshot.render(to: path)
+    case .app:
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.setActivationPolicy(.accessory)
+        withExtendedLifetime(delegate) { app.run() }
     }
-    // `--toggle prompts` opens on the Prompts tab.
-    let tab = arguments.firstIndex(of: "--toggle").flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
-    DistributedNotificationCenter.default().postNotificationName(
-        AppDelegate.toggleNotification, object: nil, userInfo: tab.map { ["tab": $0] }, deliverImmediately: true)
-    exit(0)
-}
-
-if let index = arguments.firstIndex(of: "--bench") {
-    let seconds = index + 1 < arguments.count ? Int(arguments[index + 1]) ?? 40 : 40
-    Bench.run(seconds: seconds, panelOpen: arguments.contains("--open"))
-    exit(0)
-}
-
-if let index = arguments.firstIndex(of: "--snapshot"), index + 1 < arguments.count {
-    MainActor.assumeIsolated { Snapshot.render(to: arguments[index + 1]) }
-    exit(0)
-}
-
-let app = NSApplication.shared
-let delegate = MainActor.assumeIsolated { AppDelegate() }
-app.delegate = delegate
-app.setActivationPolicy(.accessory)
-app.run()
+} catch { failCLI(error, json: arguments.contains("--json")) }

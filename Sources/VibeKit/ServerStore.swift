@@ -61,6 +61,14 @@ struct ManagedProcess: Codable, Hashable {
     let pid: Int32
     let started: Date
     let log: URL
+    /// Headless launches can finish while the GUI is closed, before it can create a Recently Stopped entry.
+    var owner: LogOwner? = nil
+
+    struct LogOwner: Codable, Hashable {
+        let title: String
+        let ports: [UInt16]
+        let directory: String
+    }
 }
 
 enum Pending: Equatable {
@@ -218,6 +226,9 @@ final class ServerStore {
 
     private func apply(_ scanned: [Server]) {
         guard !isDemo else { return }
+        // Restarts from the CLI can publish logs while the panel is running.
+        let registry = ManagedRegistry(directory: persistenceDirectory)
+        if let external = try? registry.load() { managed.merge(external) { _, new in new } }
         let sorted = scanned.sorted { a, b in
             if a.category != b.category { return a.category.sortOrder < b.category.sortOrder }
             let byTitle = a.title.localizedStandardCompare(b.title)
@@ -293,8 +304,10 @@ final class ServerStore {
                 && LibProc.startDate(process.pid).map { abs($0.timeIntervalSince(process.started)) < 1 } == true)
         }
         if liveManaged.count != managed.count {
-            managed = liveManaged
-            saveManaged()
+            let stale = managed.filter { liveManaged[$0.key] == nil }
+            managed = (try? registry.update { entries in
+                for (key, old) in stale where entries[key] == old { entries[key] = nil }
+            }) ?? liveManaged
         }
 
         if sorted != servers { servers = sorted }
@@ -468,8 +481,10 @@ final class ServerStore {
                 launches[spawned.pid] = Launch(pendingID: pendingID, entry: entry, log: log, started: started)
                 stdinWriters[spawned.pid] = spawned.stdinWriter
                 if let started = LibProc.startDate(spawned.pid) {
-                    managed["\(spawned.pid)-\(Int(started.timeIntervalSince1970))"] = ManagedProcess(pid: spawned.pid, started: started, log: log)
-                    saveManaged()
+                    let key = "\(spawned.pid)-\(Int(started.timeIntervalSince1970))"
+                    let record = ManagedProcess(pid: spawned.pid, started: started, log: log)
+                    managed[key] = record
+                    _ = try? ManagedRegistry(directory: persistenceDirectory).update { $0[key] = record }
                 }
                 scanNow()
                 // Clear the spinner if the server never binds its port, and say so.
@@ -635,12 +650,12 @@ final class ServerStore {
 
     // MARK: Persistence
 
-    static let supportDirectory: URL = {
+    nonisolated static let supportDirectory: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appendingPathComponent("VibeKit", isDirectory: true)
     }()
 
-    static let logsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    nonisolated static let logsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Logs/VibeKit", isDirectory: true)
 
     private static func load<T: Decodable>(_ type: T.Type, from file: URL) -> T? {
@@ -656,5 +671,4 @@ final class ServerStore {
     }
 
     private func saveRecents() { save(recents, to: "recents.json") }
-    private func saveManaged() { save(managed, to: "managed.json") }
 }

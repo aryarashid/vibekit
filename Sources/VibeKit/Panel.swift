@@ -110,7 +110,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
     }
 
-    func show(from button: NSStatusBarButton?, tab: PanelTab? = nil, route: Route = .list) {
+    func show(from button: NSStatusBarButton?, tab: PanelTab? = nil, route: Route = .list, query: String = "") {
         if let button { statusButton = button }
         if prewarming {
             prewarming = false
@@ -127,6 +127,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         var initial = PanelRootView.InitialState()
         initial.tab = tab ?? store.settings.lastTab
         initial.route = route
+        initial.query = query
         // The view only reports tab changes made inside it. `toggle` needs to know the tab it opened on.
         store.settings.lastTab = initial.tab
         // Reuse the AppKit window and hosting infrastructure, but give each opening fresh view state.

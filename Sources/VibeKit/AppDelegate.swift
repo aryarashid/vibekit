@@ -70,7 +70,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleRequested(_ notification: Notification) {
         let tab = (notification.userInfo?["tab"] as? String).flatMap(PanelTab.init(rawValue:))
-        panel.toggle(from: statusItem.button, tab: tab)
+        if let query = notification.userInfo?["query"] as? String {
+            panel.show(from: statusItem.button, tab: tab, query: query)
+        } else {
+            panel.toggle(from: statusItem.button, tab: tab)
+        }
     }
 
     private func observeSettings() {
