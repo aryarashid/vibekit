@@ -218,8 +218,9 @@ private final class SparkleDelegate: NSObject, SPUUpdaterDelegate, @preconcurren
 
     // MARK: SPUStandardUserDriverDelegate
 
-    /// A menu bar app has no Dock icon to badge, so Sparkle shows scheduled updates itself and
-    /// `standardUserDriverWillHandleShowingUpdate` brings them to the front.
+    /// A menu bar app has no Dock icon to badge, so Sparkle shows scheduled updates itself.
+    /// Only bring the app forward and close the panel for user-initiated checks or modal alerts,
+    /// never stealing focus mid-typing for a background scheduled reminder.
     var supportsGentleScheduledUpdateReminders: Bool { true }
 
     func standardUserDriverShouldHandleShowingScheduledUpdate(_ update: SUAppcastItem, andInImmediateFocus immediateFocus: Bool) -> Bool {
@@ -227,7 +228,7 @@ private final class SparkleDelegate: NSObject, SPUUpdaterDelegate, @preconcurren
     }
 
     func standardUserDriverWillHandleShowingUpdate(_ handleShowingUpdate: Bool, forUpdate update: SUAppcastItem, state: SPUUserUpdateState) {
-        if handleShowingUpdate { owner?.prepareToShowUI() }
+        if handleShowingUpdate && state.userInitiated { owner?.prepareToShowUI() }
     }
 
     func standardUserDriverWillShowModalAlert() {

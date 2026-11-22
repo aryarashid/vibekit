@@ -35,7 +35,8 @@ case "${1:-}" in
     ;;
   --sparkle)
     tool_dir="$(dirname "$(scripts/sparkle.sh sign-update)")"
-    if gh secret list --repo "$REPO" --json name --jq '.[].name' | grep -qx SPARKLE_PRIVATE_KEY; then
+    have="$(gh secret list --repo "$REPO" --json name --jq '.[].name')"
+    if grep -qx SPARKLE_PRIVATE_KEY <<< "$have"; then
       echo "SPARKLE_PRIVATE_KEY is already set. Replacing it would break updates for everyone; delete it by hand first if you really mean to." >&2
       exit 1
     fi
@@ -58,7 +59,15 @@ case "${1:-}" in
     p8="${2:?Pass the AuthKey .p8 file}"; key_id="${3:?Pass the key ID}"
     put NOTARY_KEY_P8 < "$p8"
     printf '%s' "$key_id" | put NOTARY_KEY_ID
-    if [[ -n "${4:-}" ]]; then printf '%s' "$4" | put NOTARY_ISSUER_ID; fi
+    if [[ -n "${4:-}" ]]; then
+      printf '%s' "$4" | put NOTARY_ISSUER_ID
+    else
+      have="$(gh secret list --repo "$REPO" --json name --jq '.[].name')"
+      if grep -qx NOTARY_ISSUER_ID <<< "$have"; then
+        gh secret delete NOTARY_ISSUER_ID --repo "$REPO" >/dev/null
+        echo "Removed stale NOTARY_ISSUER_ID (individual keys must not pass --issuer)"
+      fi
+    fi
     ;;
   *)
     sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'

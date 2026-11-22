@@ -16,7 +16,8 @@ fi
 
 VERSION="${VERSION:-$(tr -d '[:space:]' < VERSION)}"
 BUILD="${BUILD:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
-SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://github.com/aryarashid/vibekit/releases/latest/download/appcast.xml}"
+REPO="${GITHUB_REPOSITORY:-aryarashid/vibekit}"
+SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://github.com/$REPO/releases/latest/download/appcast.xml}"
 SPARKLE_PUBLIC_KEY="${SPARKLE_PUBLIC_KEY:-}"
 APP="build/Vibe Kit.app"
 

@@ -30,6 +30,7 @@ export VERSION
 BUILD="${BUILD:-$(git rev-list --count HEAD)}"
 export BUILD
 REPO="${GITHUB_REPOSITORY:-aryarashid/vibekit}"
+export SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://github.com/$REPO/releases/latest/download/appcast.xml}"
 
 if [[ -z "${SIGN_IDENTITY:-}" ]]; then
   SIGN_IDENTITY="$(security find-identity -v -p codesigning | awk -F'"' '/Developer ID Application/ { print $2; exit }')"
@@ -87,6 +88,8 @@ notarize() {
 # 1. Build a universal app signed with the Developer ID and the hardened runtime.
 UNIVERSAL=1 SIGN_IDENTITY="$SIGN_IDENTITY" ./scripts/build-app.sh
 codesign --verify --strict --deep --verbose=2 "$APP"
+APP_FEED="$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$APP/Contents/Info.plist")"
+[[ "$APP_FEED" == "$SPARKLE_FEED_URL" ]] || { echo "Embedded SUFeedURL ($APP_FEED) does not match $SPARKLE_FEED_URL." >&2; exit 1; }
 
 # 2. Notarize the app and staple the ticket to it, so it opens without a network check.
 rm -f build/VibeKit-notarize.zip
