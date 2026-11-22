@@ -23,7 +23,7 @@ enum LidSleep {
 
     /// SHA-256 of Resources/lid-sleep-helper.sh. The app bundle is writable by the user, so the
     /// installer only hands root a script with exactly this hash. A test keeps it in step.
-    static let helperSHA256 = "d72f4bab4a5e8e4934cc855f8a30c142d0b2201e9527a6eb1901ebe9dac00937"
+    static let helperSHA256 = "a14b75a7f78ec29fa3277e82fa97b2a54883d812df0fe84312ef0f3144662797"
 
     /// The helper script inside the app bundle, or next to the sources for `swift run`.
     static var bundledHelper: URL? {

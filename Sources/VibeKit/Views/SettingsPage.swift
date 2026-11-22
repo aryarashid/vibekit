@@ -149,7 +149,7 @@ struct SettingsPage: View {
             } else if settings.lidHelperPaused {
                 lidNotice("Paused. The helper was set up for another copy of Vibe Kit, or has stopped. Switch this on to set it up again.", warning: true)
             } else if settings.lidStayAwake {
-                lidNotice("Agents keep working with the lid closed, then the Mac sleeps. It sleeps right away at 15% battery or less, and never on its own while docked to a display. While this is on, the Mac also won't go to sleep by itself with the lid open.")
+                lidNotice("The screen turns off when the lid closes, but agents keep working until the time is up, then the Mac sleeps. It sleeps right away at 15% battery or less, and never on its own while docked to a display. While this is on, the Mac also won't go to sleep by itself with the lid open.")
             } else if settings.lidHelperInstalled {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text("Off. The helper is installed but does nothing.")

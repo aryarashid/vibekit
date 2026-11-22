@@ -148,9 +148,14 @@ tick() {
         fi
     else
         docked=0
-        if [[ -z $closed_at ]] || (( now < closed_at )); then
+        if [[ -z $closed_at ]]; then
             closed_at=$now
             log_change "Lid closed. Timer started."
+            # Only the system stays awake. The lid already darkens the built-in screen; this
+            # makes sure of it, and locks the screen if the Mac asks for a password on wake.
+            action displaysleepnow
+        elif (( now < closed_at )); then
+            closed_at=$now
         fi
         if low_battery; then
             reason="low battery"

@@ -39,7 +39,12 @@ final class LidSleepHelperTests: XCTestCase {
         XCTAssertEqual(process.terminationStatus, 0)
     }
 
+    /// The actions file without `displaysleepnow`, which has its own test.
     private func lines(_ name: String = "actions") throws -> [String] {
+        try allLines(name).filter { $0 != "displaysleepnow" }
+    }
+
+    private func allLines(_ name: String = "actions") throws -> [String] {
         try String(contentsOf: directory.appendingPathComponent(name), encoding: .utf8)
             .split(separator: "\n").map(String.init)
     }
@@ -242,5 +247,22 @@ final class LidSleepHelperTests: XCTestCase {
         try write("now", String(1000 + 35 * 60))
         try runHelper()
         XCTAssertEqual(try lines(), ["disablesleep 1", "disablesleep 0", "sleepnow"])
+    }
+
+    func testTheScreenSleepsWhenTheLidClosesButNotWhenDocked() throws {
+        try runHelper()
+        try write("lid", "Yes")
+        try runHelper()
+        try write("now", "1060")
+        try runHelper()
+        // The display sleeps once, as the timer starts, while the system stays awake.
+        XCTAssertEqual(try allLines(), ["disablesleep 1", "displaysleepnow"])
+
+        try write("lid", "No")
+        try runHelper()
+        try write("lid", "Yes")
+        try write("causes", "No")
+        try runHelper()
+        XCTAssertEqual(try allLines().filter { $0 == "displaysleepnow" }.count, 1)
     }
 }
