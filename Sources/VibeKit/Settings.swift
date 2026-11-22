@@ -23,6 +23,16 @@ final class Settings {
     var terminalID: String? { didSet { defaults.set(terminalID, forKey: "terminalID") } }
 
     private(set) var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
+    /// How long the Mac stays awake after the lid closes, when that is on. Kept while it is off.
+    var lidSleepMinutes: Int { didSet { defaults.set(lidSleepMinutes, forKey: "lidSleepMinutes") } }
+    /// Whether the lid sleep helper is installed and has a delay set. Read from disk, not saved.
+    private(set) var lidStayAwake = false
+    /// The helper is on this Mac, even if its delay is off.
+    private(set) var lidHelperInstalled = false
+    /// The installed helper is older than the one in this copy of the app.
+    private(set) var lidHelperOutdated = false
+    /// The admin prompt is up or the helper is installing.
+    private(set) var lidHelperBusy = false
     /// Shortcuts that are on but owned by another app, so Settings can say so. Not saved.
     var takenShortcuts: Set<String> = []
 
@@ -37,6 +47,49 @@ final class Settings {
         lastTab = defaults.string(forKey: "lastTab").flatMap(PanelTab.init(rawValue:)) ?? .servers
         editorID = defaults.string(forKey: "editorID")
         terminalID = defaults.string(forKey: "terminalID")
+        let minutes = defaults.integer(forKey: "lidSleepMinutes")
+        lidSleepMinutes = LidSleep.choices.contains(minutes) ? minutes : LidSleep.defaultMinutes
+    }
+
+    /// Turns lid sleep delay on or off. The first time it installs the helper, which asks for an
+    /// administrator password; if that is cancelled the switch stays off. Off keeps the helper
+    /// and writes 0, so turning it back on needs no password.
+    func setLidStayAwake(_ on: Bool) async {
+        guard !lidHelperBusy else { return }
+        if on && LidSleep.helperState() != .current {
+            lidHelperBusy = true
+            _ = await LidSleep.install(minutes: lidSleepMinutes)
+            lidHelperBusy = false
+        } else if LidSleep.helperState() != .missing {
+            _ = LidSleep.writeMinutes(on ? lidSleepMinutes : 0)
+        }
+        refreshLidStayAwake()
+    }
+
+    func setLidSleepMinutes(_ minutes: Int) {
+        lidSleepMinutes = minutes
+        if lidStayAwake { _ = LidSleep.writeMinutes(minutes) }
+        refreshLidStayAwake()
+    }
+
+    /// Removes the helper entirely, for people who no longer want it on their Mac.
+    func removeLidHelper() async {
+        guard !lidHelperBusy else { return }
+        lidHelperBusy = true
+        _ = await LidSleep.uninstall()
+        lidHelperBusy = false
+        refreshLidStayAwake()
+    }
+
+    func refreshLidStayAwake() {
+        let state = LidSleep.helperState()
+        let on = state != .missing && LidSleep.readMinutes() > 0
+        if lidStayAwake != on { lidStayAwake = on }
+        if lidHelperInstalled != (state != .missing) { lidHelperInstalled = state != .missing }
+        if lidHelperOutdated != (state == .outdated) { lidHelperOutdated = state == .outdated }
+        // Show the delay the helper actually uses, in case the file was changed by hand.
+        let minutes = LidSleep.readMinutes()
+        if on && minutes != lidSleepMinutes { lidSleepMinutes = minutes }
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {

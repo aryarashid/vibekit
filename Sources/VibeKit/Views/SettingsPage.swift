@@ -36,6 +36,9 @@ struct SettingsPage: View {
                             .padding(.vertical, 4)
                         }
                     }
+                    if LidSleep.isSupported {
+                        group("Lid") { lidSleepRows }
+                    }
                     group("Prompts") {
                         toggle("Paste into the app in front when you pick a prompt", isOn: Binding(
                             get: { settings.pasteOnUse },
@@ -108,8 +111,67 @@ struct SettingsPage: View {
         }
         .onAppear {
             settings.refreshLaunchAtLogin()
+            settings.refreshLidStayAwake()
             pasteAccess = PromptStore.canPaste
         }
+    }
+
+    @ViewBuilder private var lidSleepRows: some View {
+        toggle("Stay awake after closing the lid", isOn: Binding(
+            get: { settings.lidStayAwake },
+            set: { on in Task { await settings.setLidStayAwake(on) } }))
+            .disabled(settings.lidHelperBusy)
+        HStack {
+            Text("Then sleep after").font(.system(size: 12.5))
+            Spacer()
+            Picker("Then sleep after", selection: Binding(get: { settings.lidSleepMinutes }, set: { settings.setLidSleepMinutes($0) })) {
+                ForEach(LidSleep.choices, id: \.self) { minutes in
+                    Text(minutes == 60 ? "1 hour" : "\(minutes) minutes").tag(minutes)
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 30)
+        Group {
+            if settings.lidStayAwake && settings.lidHelperOutdated {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning)
+                    Text("This version of Vibe Kit has a newer helper.")
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button("Update") { Task { await settings.setLidStayAwake(true) } }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Theme.violet)
+                        .fontWeight(.semibold)
+                        .disabled(settings.lidHelperBusy)
+                }
+            } else if !settings.lidStayAwake && settings.lidHelperInstalled {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("Off. The helper is installed but does nothing.")
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button("Remove") { Task { await settings.removeLidHelper() } }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Theme.violet)
+                        .fontWeight(.semibold)
+                        .disabled(settings.lidHelperBusy)
+                }
+            } else {
+                Text(settings.lidStayAwake
+                    ? "Agents keep working with the lid closed, then the Mac sleeps. It sleeps at once below 15% battery, and never on its own while docked to a display. While this is on, the Mac also won't idle to sleep with the lid open."
+                    : "Turning this on installs a small helper and asks for your password once.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .font(Theme.metaFont)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
     }
 
     private func openAccessibilitySettings() {

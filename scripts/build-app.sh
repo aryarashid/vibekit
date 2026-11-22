@@ -27,6 +27,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/VibeKit" "$APP/Contents/MacOS/VibeKit"
 cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+cp Resources/lid-sleep-helper.sh "$APP/Contents/Resources/lid-sleep-helper.sh"
 sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" Resources/Info.plist > "$APP/Contents/Info.plist"
 
 # Ad hoc signature by default, which is fine for running locally. scripts/release.sh sets
