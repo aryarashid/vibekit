@@ -29,6 +29,8 @@ enum HeadlessLaunch {
             if let equals = entry.firstIndex(of: "=") { env[String(entry[..<equals])] = String(entry[entry.index(after: equals)...]) }
         }
         env["PWD"] = spec.directory
+        env["VIBEKIT_MANAGED"] = "1"
+        env["XPC_SERVICE_NAME"] = "0"
         if env["FORCE_COLOR"] == nil { env["FORCE_COLOR"] = "1" }
         process.environment = env
         process.currentDirectoryURL = URL(fileURLWithPath: spec.directory, isDirectory: true)

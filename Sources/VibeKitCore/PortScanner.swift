@@ -365,7 +365,8 @@ public final class PortScanner: @unchecked Sendable {
             ?? unit.framework
         // launchd brings back a database or service it manages (`brew services`) as soon as it stops, so starting
         // another copy on Restart would collide with it on the same port and data folder.
-        let launchdManaged = unit.root.ppid == 1 && (framework.category == .database || framework.category == .service)
+        let launchdManaged = Self.isLaunchdManaged(ppid: unit.root.ppid, environment: unit.root.environment)
+            && (framework.category == .database || framework.category == .service)
         let launch = framework.category == .other || launchdManaged ? nil : launchSpec(for: unit.chain)
         let ports = Self.orderedPorts(sortedListeners.flatMap(\.1), hints: unit.chain.flatMap(\.facts.argv),
                                       preferred: framework.preferredPorts)
@@ -442,7 +443,8 @@ public final class PortScanner: @unchecked Sendable {
     static func cleaned(_ env: [String]) -> [String]? {
         guard env.contains(where: { $0.hasPrefix("PATH=") }) else { return nil }
         let drop: Set<String> = ["RUN_MAIN", "WERKZEUG_RUN_MAIN", "WERKZEUG_SERVER_FD", "NODE_CHANNEL_FD",
-                                 "NODE_UNIQUE_ID", "TERM_SESSION_ID", "ITERM_SESSION_ID", "SHLVL", "_"]
+                                 "NODE_UNIQUE_ID", "TERM_SESSION_ID", "ITERM_SESSION_ID", "SHLVL", "_",
+                                 "VIBEKIT_MANAGED"]
         return env.filter { entry in
             guard let eq = entry.firstIndex(of: "=") else { return false }
             return !drop.contains(String(entry[..<eq]))
@@ -498,8 +500,22 @@ public final class PortScanner: @unchecked Sendable {
     /// Up to this many processes above the unit are checked, not counting shells and `login`.
     private static let launcherHops = 4
 
+    /// True when `launchd` itself supervises this process (such as a `brew services` LaunchAgent), rather than an
+    /// orphaned process reparented to PID 1 (such as a detached `vibekit restart` or closed terminal tab).
+    static func isLaunchdManaged(ppid: pid_t, environment: [String]) -> Bool {
+        guard ppid == 1 else { return false }
+        if environment.contains("VIBEKIT_MANAGED=1") { return false }
+        guard !environment.isEmpty else { return true }
+        if let xpc = environment.first(where: { $0.hasPrefix("XPC_SERVICE_NAME=") }) {
+            let value = xpc.dropFirst("XPC_SERVICE_NAME=".count)
+            return !value.isEmpty && value != "0"
+        }
+        return !environment.contains { $0.hasPrefix("TERM_PROGRAM=") || $0.hasPrefix("SSH_TTY=") || $0.hasPrefix("SHELL=") }
+    }
+
     /// The processes above `root`, nearest first, ending at Vibe Kit, launchd or the hop limit.
     private func launcher(above root: Inspected, table: [pid_t: LibProc.ShortInfo]) -> String? {
+        if root.environment.contains("VIBEKIT_MANAGED=1") { return "Vibe Kit" }
         var ancestors: [Ancestor] = []
         var pid = root.ppid
         var hops = 0
@@ -507,6 +523,7 @@ public final class PortScanner: @unchecked Sendable {
         // terminal and its shell is read directly.
         while ancestors.count < 12 {
             if pid <= 1 {
+                if ancestors.isEmpty && !Self.isLaunchdManaged(ppid: 1, environment: root.environment) { break }
                 ancestors.append(Ancestor(pid: 1, executable: "/sbin/launchd", argv: ["launchd"]))
                 break
             }

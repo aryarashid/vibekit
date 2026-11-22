@@ -142,6 +142,7 @@ final class ServerStore {
     @ObservationIgnored private(set) var isDemo = false
     @ObservationIgnored private var probing = Set<String>()
     @ObservationIgnored private var probeTokens: [String: UInt64] = [:]
+    @ObservationIgnored private var nextProbeToken: UInt64 = 0
     @ObservationIgnored private var staleProbes = Set<String>()
     @ObservationIgnored private var probeAttempts: [String: Int] = [:]
     @ObservationIgnored private var retryAt: [String: Date] = [:]
@@ -309,6 +310,7 @@ final class ServerStore {
         if unanswered.contains(where: { !ids.contains($0) }) { unanswered = unanswered.filter { ids.contains($0) } }
         probeAttempts = probeAttempts.filter { ids.contains($0.key) }
         probeTokens = probeTokens.filter { ids.contains($0.key) }
+        probing = probing.filter { ids.contains($0) }
         retryAt = retryAt.filter { ids.contains($0.key) }
         probedAt = probedAt.filter { ids.contains($0.key) }
 
@@ -367,7 +369,8 @@ final class ServerStore {
         probing.insert(server.id)
         let id = server.id
         let key = server.httpCheckKey
-        let token = (probeTokens[id] ?? 0) &+ 1
+        nextProbeToken &+= 1
+        let token = nextProbeToken
         probeTokens[id] = token
         let host = host(for: server)
         let port = server.primaryPort
@@ -414,7 +417,8 @@ final class ServerStore {
             reprobe(server)
         } else {
             settings.skippedHTTPChecks.insert(key)
-            probeTokens[server.id] = (probeTokens[server.id] ?? 0) &+ 1
+            nextProbeToken &+= 1
+            probeTokens[server.id] = nextProbeToken
             probing.remove(server.id)
             unanswered.remove(server.id)
             pages[server.id] = nil

@@ -79,6 +79,16 @@ struct LauncherTests {
         #expect(launcher([shell(10), t3, A(pid: 1, executable: "/sbin/launchd", argv: [])]) == "T3 Code (Beta)")
         #expect(launcher([]) == nil)
     }
+
+    @Test func launchdManagedDistinguishesJobsFromOrphanedLaunches() {
+        #expect(!PortScanner.isLaunchdManaged(ppid: 42, environment: ["XPC_SERVICE_NAME=homebrew.mxcl.redis"]))
+        #expect(PortScanner.isLaunchdManaged(ppid: 1, environment: ["XPC_SERVICE_NAME=homebrew.mxcl.redis", "PATH=/usr/bin"]))
+        #expect(PortScanner.isLaunchdManaged(ppid: 1, environment: []))
+        // Headless CLI restarts and orphaned shell children reparented to PID 1 are not launchd jobs.
+        #expect(!PortScanner.isLaunchdManaged(ppid: 1, environment: ["VIBEKIT_MANAGED=1", "XPC_SERVICE_NAME=homebrew.mxcl.redis"]))
+        #expect(!PortScanner.isLaunchdManaged(ppid: 1, environment: ["XPC_SERVICE_NAME=0", "PATH=/usr/bin"]))
+        #expect(!PortScanner.isLaunchdManaged(ppid: 1, environment: ["TERM_PROGRAM=ghostty", "PATH=/usr/bin"]))
+    }
 }
 
 @Suite("Runner detection")
