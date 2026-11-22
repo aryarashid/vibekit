@@ -25,7 +25,7 @@ final class LidSleepHelperTests: XCTestCase {
         try value.write(to: directory.appendingPathComponent(name), atomically: true, encoding: .utf8)
     }
 
-    private func runHelper(_ arguments: [String] = ["--tick", "state"]) throws {
+    private func runHelper(_ arguments: [String] = ["--tick", "state"], environment: [String: String] = [:]) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.currentDirectoryURL = directory
@@ -33,7 +33,7 @@ final class LidSleepHelperTests: XCTestCase {
         process.environment = [
             "VIBEKIT_LID_FAKE_DIR": directory.path,
             "VIBEKIT_LID_CONFIG": directory.appendingPathComponent("config").path,
-        ]
+        ].merging(environment) { $1 }
         try process.run()
         process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0)
@@ -92,6 +92,7 @@ final class LidSleepHelperTests: XCTestCase {
     }
 
     func testLowBatteryThreshold() throws {
+        try runHelper()
         try write("lid", "Yes")
         try write("percent", "15")
         try runHelper()
@@ -124,8 +125,9 @@ final class LidSleepHelperTests: XCTestCase {
 
     func testWhitespaceAndStrictStateParsing() throws {
         try write("config", "  30\n")
-        try write("lid", "Yes")
         try write("state", "closed_at=$(touch pwned)\nfired=1x\nflag=10\n")
+        try runHelper()
+        try write("lid", "Yes")
         try runHelper()
         try write("now", "2799")
         try runHelper()
@@ -149,5 +151,79 @@ final class LidSleepHelperTests: XCTestCase {
     func testOff() throws {
         try runHelper(["--off"])
         XCTAssertEqual(try lines(), ["disablesleep 0"])
+    }
+
+    func testStartingWithTheLidClosedNeverHoldsTheMacAwake() throws {
+        // A restart or update while the Mac is in a bag cannot know when the lid closed.
+        try write("lid", "Yes")
+        try runHelper()
+        try write("now", String(1000 + 3 * 3600))
+        try runHelper()
+        XCTAssertEqual(try lines(), ["disablesleep 0"])
+    }
+
+    func testDockingAfterSleepStartsAFreshTimerOnUndock() throws {
+        try runHelper()
+        try write("lid", "Yes")
+        try write("now", "1000")
+        try runHelper()
+        try write("now", String(1000 + 45 * 60))
+        try runHelper()
+        let slept = ["disablesleep 1", "disablesleep 0", "sleepnow"]
+        XCTAssertEqual(try lines(), slept)
+
+        try write("causes", "No")
+        try write("now", "10000")
+        try runHelper()
+        XCTAssertEqual(try lines(), slept + ["disablesleep 1"])
+        try write("causes", "Yes")
+        try write("now", "10010")
+        try runHelper()
+        try write("now", String(10010 + 45 * 60))
+        try runHelper()
+        XCTAssertEqual(try lines(), slept + ["disablesleep 1", "disablesleep 0", "sleepnow"])
+    }
+
+    func testAsksAgainIfTheMacDidNotSleep() throws {
+        try runHelper()
+        try write("lid", "Yes")
+        try write("percent", "10")
+        try write("power", "Battery")
+        try runHelper()
+        XCTAssertEqual(try lines(), ["disablesleep 1", "disablesleep 0", "sleepnow"])
+        // Still awake and polling every few seconds: ask again after a minute.
+        for now in stride(from: 1010, through: 1060, by: 10) {
+            try write("now", String(now))
+            try runHelper()
+        }
+        XCTAssertEqual(try lines().filter { $0 == "sleepnow" }.count, 2)
+        // It slept (a long gap between polls), then woke with the lid still closed: leave it be.
+        for now in [5000, 5010, 5080, 5150] {
+            try write("now", String(now))
+            try runHelper()
+        }
+        XCTAssertEqual(try lines().filter { $0 == "sleepnow" }.count, 2)
+    }
+
+    func testAClockSetBackwardsDoesNotStretchTheDelay() throws {
+        try runHelper()
+        try write("lid", "Yes")
+        try write("now", "5000")
+        try runHelper()
+        try write("now", "1000")
+        try runHelper()
+        try write("now", String(1000 + 45 * 60))
+        try runHelper()
+        XCTAssertEqual(try lines(), ["disablesleep 1", "disablesleep 0", "sleepnow"])
+    }
+
+    func testStopsWhenTheAppIsGone() throws {
+        let appFile = directory.appendingPathComponent("app-path")
+        try write("app-path", directory.path)
+        try runHelper(environment: ["VIBEKIT_LID_APP_FILE": appFile.path])
+        XCTAssertEqual(try lines(), ["disablesleep 1"])
+        try write("app-path", directory.appendingPathComponent("Trashed.app").path)
+        try runHelper(environment: ["VIBEKIT_LID_APP_FILE": appFile.path])
+        XCTAssertEqual(try lines(), ["disablesleep 1", "disablesleep 0"])
     }
 }

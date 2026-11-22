@@ -57,9 +57,12 @@ final class Settings {
     func setLidStayAwake(_ on: Bool) async {
         guard !lidHelperBusy else { return }
         if on && LidSleep.helperState() != .current {
+            let wasOn = lidStayAwake
             lidHelperBusy = true
-            _ = await LidSleep.install(minutes: lidSleepMinutes)
+            let installed = await LidSleep.install(minutes: lidSleepMinutes)
             lidHelperBusy = false
+            // A failed install may have left a config behind; don't show it as on.
+            if !installed && !wasOn { _ = LidSleep.writeMinutes(0) }
         } else if LidSleep.helperState() != .missing {
             _ = LidSleep.writeMinutes(on ? lidSleepMinutes : 0)
         }

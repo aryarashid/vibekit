@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import IOKit
 
@@ -14,17 +15,37 @@ enum LidSleep {
     static let plistPath = "/Library/LaunchDaemons/dev.vibekit.lid-sleep.plist"
     static let configDirectory = "/Library/Application Support/Vibe Kit"
     static let configPath = configDirectory + "/lid-sleep-minutes"
+    /// Root's file naming the app, so the helper goes idle if the app is moved to the Trash.
+    static let appPathFile = configDirectory + "/app-path"
 
     static let choices = [15, 30, 45, 60]
     static let defaultMinutes = 45
 
+    /// SHA-256 of Resources/lid-sleep-helper.sh. The app bundle is writable by the user, so the
+    /// installer only hands root a script with exactly this hash. A test keeps it in step.
+    static let helperSHA256 = "98928918157f3cfb64ff6577717fb6eaaac0b1f5cffb29e6e503c175db9cac58"
+
     /// The helper script inside the app bundle, or next to the sources for `swift run`.
     static var bundledHelper: URL? {
         if let url = Bundle.main.url(forResource: "lid-sleep-helper", withExtension: "sh") { return url }
+        #if DEBUG
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Resources/lid-sleep-helper.sh")
         return FileManager.default.fileExists(atPath: source.path) ? source : nil
+        #else
+        return nil
+        #endif
+    }
+
+    /// The bundled helper's bytes, only if they are the ones this build was made with.
+    static func verifiedHelper() -> Data? {
+        guard let data = bundledHelper.flatMap({ try? Data(contentsOf: $0) }), sha256(data) == helperSHA256 else { return nil }
+        return data
+    }
+
+    nonisolated static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     /// Only Macs with a lid report a clamshell state.
@@ -39,18 +60,18 @@ enum LidSleep {
         case missing, outdated, current
     }
 
-    /// Whether the installed helper is the one this copy of Vibe Kit ships.
+    /// Whether the installed helper is the one this copy of Vibe Kit ships, for this copy's location.
     static func helperState() -> HelperState {
         let fm = FileManager.default
         guard fm.fileExists(atPath: plistPath), let installed = fm.contents(atPath: helperPath) else { return .missing }
-        guard let bundled = bundledHelper.flatMap({ try? Data(contentsOf: $0) }) else { return .current }
-        return installed == bundled ? .current : .outdated
+        let app = fm.contents(atPath: appPathFile).map { String(decoding: $0, as: UTF8.self) }
+        return sha256(installed) == helperSHA256 && app == Bundle.main.bundlePath ? .current : .outdated
     }
 
     /// The minutes the daemon will use, read the same strict way it reads them. 0 means off.
     static func readMinutes() -> Int {
-        guard let data = FileManager.default.contents(atPath: configPath) else { return 0 }
-        return parseMinutes(String(decoding: data.prefix(16), as: UTF8.self))
+        guard let data = FileManager.default.contents(atPath: configPath), data.count <= 16 else { return 0 }
+        return parseMinutes(String(decoding: data, as: UTF8.self))
     }
 
     nonisolated static func parseMinutes(_ text: String) -> Int {
@@ -60,14 +81,17 @@ enum LidSleep {
     }
 
     /// Rewrites the config in place. The folder is root's, so the file cannot be swapped for a
-    /// link, and the installer made the file itself ours so this needs no password.
+    /// link, and the installer made the file itself ours so this needs no password. It writes
+    /// first and trims after, so the helper never reads an empty file in between.
     static func writeMinutes(_ minutes: Int) -> Bool {
         let value = choices.contains(minutes) ? minutes : 0
         guard let handle = FileHandle(forWritingAtPath: configPath) else { return false }
         defer { try? handle.close() }
+        let data = Data("\(value)\n".utf8)
         do {
-            try handle.truncate(atOffset: 0)
-            try handle.write(contentsOf: Data("\(value)\n".utf8))
+            try handle.seek(toOffset: 0)
+            try handle.write(contentsOf: data)
+            try handle.truncate(atOffset: UInt64(data.count))
             return true
         } catch {
             NSLog("Vibe Kit: could not write lid sleep config: \(error.localizedDescription)")
@@ -78,37 +102,62 @@ enum LidSleep {
     /// Installs or updates the daemon with one administrator prompt. Returns false if the user
     /// cancels or anything fails. Runs off the main thread because the prompt blocks.
     static func install(minutes: Int) async -> Bool {
-        guard let helper = bundledHelper else { return false }
-        let command = installCommand(helper: helper.path, minutes: minutes, uid: getuid())
+        guard let helper = verifiedHelper() else {
+            NSLog("Vibe Kit: the bundled lid sleep helper is missing or changed, so it was not installed")
+            return false
+        }
+        let command = installCommand(helper: helper, minutes: minutes, uid: getuid(), appPath: Bundle.main.bundlePath)
         return await runAsAdmin(command, prompt: "Vibe Kit wants to install a small helper that keeps your Mac awake for a while after you close the lid.")
     }
 
     /// Removes the daemon. Stopping it clears the sleep flag, and the last line makes sure.
     static func uninstall() async -> Bool {
         let command = [
-            "/bin/launchctl bootout system/\(label) 2>/dev/null",
-            "/bin/rm -f \(shellQuote(plistPath)) \(shellQuote(helperPath)) \(shellQuote(configPath))",
+            "set -e",
+            "/bin/launchctl bootout system/\(label) 2>/dev/null || true",
+            waitUntilUnloaded,
+            "/bin/rm -f \(shellQuote(plistPath)) \(shellQuote(helperPath)) \(shellQuote(configPath)) \(shellQuote(appPathFile))",
             "/usr/bin/pmset -a disablesleep 0",
-        ].joined(separator: "; ")
+        ].joined(separator: "\n")
         return await runAsAdmin(command, prompt: "Vibe Kit wants to remove its lid sleep helper.")
     }
 
-    nonisolated static func installCommand(helper: String, minutes: Int, uid: uid_t) -> String {
+    /// `bootout` can return before the old helper has exited, and bootstrapping again too soon fails.
+    nonisolated static var waitUntilUnloaded: String {
+        "i=0; while /bin/launchctl print system/\(label) >/dev/null 2>&1 && [ $i -lt 50 ]; do i=$((i+1)); /bin/sleep 0.1; done"
+    }
+
+    nonisolated static func installCommand(helper: Data, minutes: Int, uid: uid_t, appPath: String) -> String {
         let value = choices.contains(minutes) ? minutes : defaultMinutes
+        let paths = ["/Library/PrivilegedHelperTools", configDirectory, helperPath, plistPath, configPath, appPathFile]
+        let encoded = helper.base64EncodedString(options: [.lineLength64Characters, .endLineWithLineFeed])
         return [
             "set -e",
+            // Root follows links, so refuse to work through one someone planted.
+            "for p in \(paths.map(shellQuote).joined(separator: " ")); do if [ -L \"$p\" ]; then echo \"refusing link $p\" >&2; exit 1; fi; done",
             "/usr/bin/install -d -o root -g wheel -m 755 /Library/PrivilegedHelperTools \(shellQuote(configDirectory))",
-            // Copy, never run from the bundle: the app is writable by the user, and root must not
-            // run a file the user can change.
-            "/usr/bin/install -o root -g wheel -m 755 \(shellQuote(helper)) \(shellQuote(helperPath))",
-            "/bin/rm -f \(shellQuote(configPath))",
+            // The script travels inside this command, from the signed app's memory after its hash
+            // was checked, never as a path into the bundle the user can change.
+            "tmp=$(/usr/bin/mktemp /Library/PrivilegedHelperTools/.dev.vibekit.lid-sleep.XXXXXX)",
+            "/usr/bin/base64 -D > \"$tmp\" <<'VIBEKIT_HELPER'",
+            encoded,
+            "VIBEKIT_HELPER",
+            "[ \"$(/usr/bin/shasum -a 256 \"$tmp\" | /usr/bin/cut -c1-64)\" = \(helperSHA256) ] || { /bin/rm -f \"$tmp\"; exit 1; }",
+            "/usr/sbin/chown root:wheel \"$tmp\"",
+            "/bin/chmod 755 \"$tmp\"",
+            "/bin/mv -f \"$tmp\" \(shellQuote(helperPath))",
+            "/bin/rm -f \(shellQuote(configPath)) \(shellQuote(appPathFile)) \(shellQuote(plistPath))",
             "/usr/bin/printf '%s\\n' \(value) > \(shellQuote(configPath))",
             "/usr/sbin/chown \(uid) \(shellQuote(configPath))",
             "/bin/chmod 644 \(shellQuote(configPath))",
+            "/usr/bin/printf '%s' \(shellQuote(appPath)) > \(shellQuote(appPathFile))",
+            "/bin/chmod 644 \(shellQuote(appPathFile))",
             "/usr/bin/printf '%s' \(shellQuote(launchdPlist)) > \(shellQuote(plistPath))",
             "/usr/sbin/chown root:wheel \(shellQuote(plistPath))",
             "/bin/chmod 644 \(shellQuote(plistPath))",
             "/bin/launchctl bootout system/\(label) 2>/dev/null || true",
+            waitUntilUnloaded,
+            "/bin/launchctl enable system/\(label)",
             "/bin/launchctl bootstrap system \(shellQuote(plistPath))",
         ].joined(separator: "\n")
     }
@@ -126,12 +175,14 @@ enum LidSleep {
                 <string>/bin/bash</string>
                 <string>\(helperPath)</string>
             </array>
+            <key>AssociatedBundleIdentifiers</key>
+            <array>
+                <string>dev.vibekit.VibeKit</string>
+            </array>
             <key>RunAtLoad</key>
             <true/>
             <key>KeepAlive</key>
             <true/>
-            <key>ProcessType</key>
-            <string>Background</string>
         </dict>
         </plist>
 
@@ -157,14 +208,14 @@ enum LidSleep {
             process.standardOutput = FileHandle.nullDevice
             do {
                 try process.run()
-                process.waitUntilExit()
             } catch {
                 NSLog("Vibe Kit: lid sleep helper change failed to start: \(error.localizedDescription)")
                 return false
             }
+            let message = errors.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
             if process.terminationStatus != 0 {
-                let message = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-                NSLog("Vibe Kit: lid sleep helper change failed: \(message)")
+                NSLog("Vibe Kit: lid sleep helper change failed: \(String(decoding: message, as: UTF8.self))")
             }
             return process.terminationStatus == 0
         }.value
