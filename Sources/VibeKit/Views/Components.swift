@@ -54,6 +54,50 @@ struct Sparkline: View {
     }
 }
 
+/// AppKit dims the built-in placeholder again when the menu bar app is inactive.
+struct PanelSearchField: View {
+    let title: String
+    @Binding var text: String
+
+    var body: some View {
+        TextField(title, text: $text, prompt: Text(""))
+            .textFieldStyle(.plain)
+            .overlay(alignment: .leading) {
+                if text.isEmpty {
+                    Text(title)
+                        .foregroundStyle(Theme.readout)
+                        .lineLimit(1)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+            .font(.system(size: 13.5))
+    }
+}
+
+/// Shared pointer and press feedback for the panel's custom controls.
+struct PanelButtonStyle: ButtonStyle {
+    var ink: Color = Theme.readout
+    var hoverInk: Color = .primary
+    var tint: Color = .primary
+    var restingFill = 0.0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var enabled
+    @State private var hovering = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        let active = enabled && (hovering || configuration.isPressed)
+        configuration.label
+            .foregroundStyle(active ? hoverInk : ink)
+            .background(Capsule().fill(tint.opacity(configuration.isPressed ? 0.18 : active ? 0.12 : restingFill)))
+            .contentShape(Rectangle())
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.10), value: configuration.isPressed)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.10), value: hovering)
+            .onHover { hovering = $0 }
+    }
+}
+
 /// A small square button that only shows a background on hover, like toolbar buttons in menus.
 struct IconButton: View {
     let symbol: String
@@ -62,20 +106,14 @@ struct IconButton: View {
     var size: CGFloat = 26
     let action: () -> Void
 
-    @State private var hovering = false
-
     var body: some View {
         Button(role: role, action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(hovering && role == .destructive ? Theme.danger : (hovering ? .primary : .secondary))
                 .frame(width: size, height: size)
-                .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(hovering ? (role == .destructive ? Theme.danger.opacity(0.14) : Color.primary.opacity(0.09)) : .clear))
-                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
+        .buttonStyle(PanelButtonStyle(hoverInk: role == .destructive ? Theme.danger : .primary,
+                                     tint: role == .destructive ? Theme.danger : .primary))
         .help(help)
         .accessibilityLabel(help)
     }
@@ -89,8 +127,6 @@ struct PillButton: View {
     var role: ButtonRole?
     let action: () -> Void
 
-    @State private var hovering = false
-
     var body: some View {
         Button(role: role, action: action) {
             HStack(spacing: 5) {
@@ -101,14 +137,14 @@ struct PillButton: View {
                 }
                 Text(title).font(.system(size: 11.5, weight: .medium))
             }
-            .foregroundStyle(role == .destructive ? (hovering ? Theme.danger : .secondary) : .primary)
+            .lineLimit(1)
+            .fixedSize()
             .padding(.horizontal, 9)
             .frame(height: 24)
-            .background(Capsule().fill(Color.primary.opacity(hovering ? 0.12 : 0.065)))
-            .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
+        .buttonStyle(PanelButtonStyle(ink: role == .destructive ? Theme.danger : .primary,
+                                     hoverInk: role == .destructive ? Theme.danger : .primary,
+                                     tint: role == .destructive ? Theme.danger : .primary, restingFill: 0.06))
     }
 }
 
@@ -126,11 +162,12 @@ struct SectionHeader: View {
                 .foregroundStyle(.secondary)
             Text("\(count)")
                 .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.tertiary)
+                .monospacedDigit()
+                .foregroundStyle(Theme.readout)
             if let collapsed {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 8.5, weight: .bold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Theme.readout)
                     .rotationEffect(.degrees(collapsed ? 0 : 90))
             }
             Spacer(minLength: 0)
@@ -146,27 +183,28 @@ struct SectionHeader: View {
 struct QRCodeView: View {
     let text: String
 
-    var body: some View {
-        if let image = Self.render(text) {
-            Image(nsImage: image)
-                .interpolation(.none)
-                .resizable()
-                .frame(width: 112, height: 112)
-                .padding(8)
-                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
-                .accessibilityLabel("QR code for \(text)")
-        }
-    }
+    @State private var code: CGImage?
+    private static let context = CIContext()
 
-    static func render(_ text: String) -> NSImage? {
-        let filter = CIFilter.qrCodeGenerator()
-        filter.message = Data(text.utf8)
-        filter.correctionLevel = "M"
-        guard let output = filter.outputImage else { return nil }
-        let rep = NSCIImageRep(ciImage: output)
-        let image = NSImage(size: rep.size)
-        image.addRepresentation(rep)
-        return image
+    var body: some View {
+        ZStack {
+            if let code {
+                // Draw whole modules and leave a four-module quiet zone, including on a 1x display.
+                let module = CGFloat(max(1, 112 / code.width))
+                Image(code, scale: 1, label: Text("QR code for \(text)"))
+                    .interpolation(.none)
+                    .resizable()
+                    .frame(width: CGFloat(code.width) * module, height: CGFloat(code.height) * module)
+                    .padding(module * 4)
+                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.white))
+            }
+        }
+        .onChange(of: text, initial: true) { _, url in
+            let filter = CIFilter.qrCodeGenerator()
+            filter.message = Data(url.utf8)
+            filter.correctionLevel = "M"
+            code = filter.outputImage.flatMap { Self.context.createCGImage($0, from: $0.extent) }
+        }
     }
 }
 
@@ -212,19 +250,27 @@ struct BrandMark: View {
 /// A switch drawn in the system accent color. The system switch turns gray whenever Vibe Kit is not the active
 /// app, which is always: the panel takes the keyboard without activating Vibe Kit. Gray made on and off hard to tell apart.
 struct PanelSwitch: ToggleStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
+
     func makeBody(configuration: Configuration) -> some View {
         let on = configuration.isOn
+        let track: AnyShapeStyle = if on {
+            AnyShapeStyle(Color.accentColor.opacity(isEnabled ? 1 : 0.45))
+        } else {
+            AnyShapeStyle(Color.primary.opacity(isEnabled ? 0.14 : 0.10))
+        }
         Button {
-            withAnimation(.snappy(duration: 0.18)) { configuration.isOn.toggle() }
+            withAnimation(reduceMotion ? nil : .snappy(duration: 0.18)) { configuration.isOn.toggle() }
         } label: {
             Capsule()
-                .fill(on ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(Color.primary.opacity(0.14)))
-                .overlay(Capsule().strokeBorder(Color.primary.opacity(on ? 0 : 0.06), lineWidth: 0.5))
+                .fill(track)
+                .overlay(Capsule().strokeBorder(Color.primary.opacity(on ? 0 : (isEnabled ? 0.06 : 0.09)), lineWidth: 0.5))
                 .frame(width: 30, height: 17)
                 .overlay(alignment: on ? .trailing : .leading) {
                     Circle()
-                        .fill(.white)
-                        .shadow(color: .black.opacity(0.22), radius: 0.8, y: 0.5)
+                        .fill(Color.white.opacity(isEnabled ? 1 : 0.78))
+                        .shadow(color: .black.opacity(isEnabled ? 0.22 : 0.14), radius: 0.8, y: 0.5)
                         .frame(width: 13, height: 13)
                         .padding(2)
                 }

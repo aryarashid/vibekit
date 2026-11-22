@@ -9,6 +9,10 @@ struct RecentRow: View {
     let onHover: () -> Void
     let onShowLogs: (URL) -> Void
 
+    private var availableLog: URL? {
+        recent.log.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+    }
+
     private var starting: Bool { store.pending[recent.id] == .starting }
 
     private var crashCode: Int32? {
@@ -17,7 +21,7 @@ struct RecentRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 0) {
             HStack(spacing: 6) {
                 StatusLight(state: crashCode == nil ? .stopped : .crashed, diameter: 7).sized()
                 Text(verbatim: "\(recent.port)")
@@ -26,6 +30,7 @@ struct RecentRow: View {
                     .fixedSize()
             }
             .frame(width: Theme.portColumn, alignment: .leading)
+            .padding(.trailing, Theme.rowGap)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(recent.title)
@@ -36,16 +41,22 @@ struct RecentRow: View {
                     Text(recent.frameworkName)
                         .foregroundStyle(Theme.tint(recent.frameworkColor))
                         .fontWeight(.medium)
-                    Text("·").foregroundStyle(.tertiary)
-                    Text(recent.launch.displayCommandShort)
-                        .font(Theme.monoSmall)
-                        .foregroundStyle(.tertiary)
-                        .truncationMode(.middle)
+                    Text("·").foregroundStyle(Theme.readout)
+                    if isSelected, let crashCode {
+                        Text("Exit \(crashCode)")
+                            .monospacedDigit()
+                            .foregroundStyle(Theme.danger)
+                    } else {
+                        Text(recent.launch.displayCommandShort)
+                            .font(Theme.monoSmall)
+                            .foregroundStyle(Theme.readout)
+                            .truncationMode(.middle)
+                    }
                 }
                 .font(Theme.metaFont)
                 .lineLimit(1)
             }
-            Spacer(minLength: 4)
+            Spacer(minLength: 6)
 
             if starting {
                 HStack(spacing: 6) {
@@ -55,17 +66,25 @@ struct RecentRow: View {
             } else if isSelected {
                 HStack(spacing: 2) {
                     PillButton(title: "Start", symbol: "play.fill") { store.start(recent) }
+                    if let log = availableLog {
+                        IconButton(symbol: "text.alignleft", help: "Show Logs") { onShowLogs(log) }
+                    }
                     IconButton(symbol: "xmark", help: "Remove from list") { store.forget(recent) }
                 }
             } else if let crashCode {
-                Text("crashed · exit \(crashCode)")
+                Text("Crashed · exit \(crashCode)")
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(Theme.danger)
-                    .help("Ended with exit code \(crashCode) \(Format.ago(recent.stoppedAt)). Its log has the details.")
+                    .monospacedDigit()
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Theme.danger.opacity(0.07)))
+                    .fixedSize()
+                    .help("Ended with exit code \(crashCode) \(Format.ago(recent.stoppedAt)).")
             } else {
                 Text((recent.reason == .exited ? "exited " : "") + Format.ago(recent.stoppedAt))
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.tertiary)
+                    .font(.system(size: 10.5)).monospacedDigit()
+                    .foregroundStyle(Theme.readout)
                     .help(recent.reason == .exited ? "It stopped outside Vibe Kit, for example with Ctrl-C." : "Stopped from Vibe Kit")
             }
         }
@@ -74,7 +93,8 @@ struct RecentRow: View {
         .contentShape(Rectangle())
         .onTapGesture { store.start(recent) }
         .background(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-            .fill(Color.primary.opacity(isSelected ? 0.075 : 0)))
+            .fill(Color.primary.opacity(isSelected ? 0.075 : 0))
+            .animation(.easeOut(duration: 0.10), value: isSelected))
         .padding(.horizontal, 6)
         .onHover { if $0 { onHover() } }
         .contextMenu {
@@ -83,7 +103,7 @@ struct RecentRow: View {
             Button("Reveal in Finder") {
                 NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: recent.launch.directory)
             }
-            if let log = recent.log, FileManager.default.fileExists(atPath: log.path) {
+            if let log = availableLog {
                 Button("Show Logs") { onShowLogs(log) }
             }
             Divider()
@@ -91,6 +111,11 @@ struct RecentRow: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(crashCode == nil ? "Stopped" : "Crashed"): \(recent.title), port \(recent.port)")
+        .accessibilityActions {
+            if let log = availableLog {
+                Button("Show Logs") { onShowLogs(log) }
+            }
+        }
         .accessibilityAction(named: "Start") { store.start(recent) }
     }
 }

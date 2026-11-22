@@ -3,7 +3,7 @@ import SwiftUI
 import VibeKitCore
 
 /// `VibeKit --snapshot out.png [--dark] [--select] [--expand] [--select-port N] [--expand-port N] [--settings]
-/// [--prompts] [--edit-prompt] [--query text] [--demo] [--transparent]` renders the panel to a PNG, for design review and the README.
+/// [--prompts] [--edit-prompt] [--scroll-end] [--query text] [--demo] [--transparent]` renders the panel to a PNG, for design review and the README.
 /// `--demo` shows sample servers instead of yours. Glass cannot be captured offscreen, so the panel sits on the
 /// window background color, or on nothing with `--transparent` for compositing.
 @MainActor
@@ -50,6 +50,17 @@ enum Snapshot {
         pump(seconds: 0.6)
         window.setContentSize(NSSize(width: PanelMetrics.width, height: height))
         pump(seconds: 0.6)
+
+        if args.contains("--scroll-end") {
+            func firstScroll(in view: NSView) -> NSScrollView? {
+                if let scroll = view as? NSScrollView { return scroll }
+                return view.subviews.lazy.compactMap(firstScroll).first
+            }
+            if let document = firstScroll(in: hosting)?.documentView {
+                document.scroll(NSPoint(x: 0, y: document.isFlipped ? document.bounds.height : 0))
+                pump(seconds: 0.2)
+            }
+        }
 
         let scale: CGFloat = 2
         let bounds = hosting.bounds

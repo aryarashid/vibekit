@@ -4,6 +4,19 @@ import XCTest
 @testable import VibeKit
 
 final class LogTests: XCTestCase {
+    func testFullCopyIncludesOutputBeforeTailAndOmitsTerminalControls() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let prefix = "first line\n" + String(repeating: "ready\n", count: 18_000)
+        try Data((prefix + "\u{1B}[31mexit 1\u{1B}[0m").utf8).write(to: url)
+        XCTAssertEqual(try LogPage.fullOutput(of: url), prefix + "exit 1")
+        XCTAssertFalse(LogPage.tail(of: url, bytes: 96 * 1024).hasPrefix("first line"))
+        try Data("\u{1B}[31mfirst\r\nsecond\r\n".utf8).write(to: url)
+        XCTAssertEqual(try LogPage.fullOutput(of: url), "first\nsecond\n")
+        try Data().write(to: url)
+        XCTAssertEqual(try LogPage.fullOutput(of: url), "")
+    }
+
     func testTailReadsOnlyTheBudgetAndDropsPartialLine() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: url) }

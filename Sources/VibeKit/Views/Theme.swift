@@ -24,7 +24,10 @@ enum Theme {
     static let cyan = Color(nsColor: cyanNS)
 
     static let rowRadius: CGFloat = 10
-    static let portColumn: CGFloat = 64
+    // Room for a 7-point light, its gap and all five SF Mono digits.
+    static let portColumn: CGFloat = 72
+    static let rowGap: CGFloat = 8
+    static let readout = Color(nsColor: dynamic(dark: 0xAEADB5, light: 0x575961))
 
     static let portFont = Font.system(size: 17, weight: .semibold, design: .monospaced)
     static let titleFont = Font.system(size: 13, weight: .semibold)

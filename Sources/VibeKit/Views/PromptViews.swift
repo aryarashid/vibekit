@@ -11,20 +11,20 @@ struct TabSwitch: View {
             segment(.prompts, symbol: "text.bubble", help: "Prompts")
         }
         .padding(2)
-        .background(Capsule().fill(Color.primary.opacity(0.055)))
+        .background(Capsule().fill(Color.primary.opacity(0.045)))
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5).allowsHitTesting(false))
     }
 
     private func segment(_ value: PanelTab, symbol: String, help: String) -> some View {
         let selected = tab == value
+        let ink: Color = selected && value == .prompts ? Theme.violet : .primary
         return Button { tab = value } label: {
             Image(systemName: symbol)
                 .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(selected ? AnyShapeStyle(selected && value == .prompts ? Theme.violet : Color.primary) : AnyShapeStyle(.tertiary))
-                .frame(width: 26, height: 20)
-                .background(Capsule().fill(Color.primary.opacity(selected ? 0.1 : 0)))
-                .contentShape(Capsule())
+                .frame(width: 27, height: 21)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PanelButtonStyle(ink: selected ? ink : Theme.readout, hoverInk: ink,
+                                     tint: ink, restingFill: selected ? 0.12 : 0))
         .help("\(help)  (Tab switches)")
         .accessibilityLabel(help)
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -90,7 +90,7 @@ struct PromptListPage: View {
                 prompts.recordUse(id)
             }
         }
-        .background(shortcuts(list))
+        .background(shortcuts)
     }
 
     // MARK: Header
@@ -99,9 +99,7 @@ struct PromptListPage: View {
         HStack(spacing: 9) {
             BrandMark(state: store.overallLight)
                 .help(store.overallLightHelp)
-            TextField("Search prompts", text: $query)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13.5))
+            PanelSearchField(title: "Search prompts", text: $query)
                 .focused($searchFocused)
                 .onKeyPress(.downArrow) { move(1, in: list); return .handled }
                 .onKeyPress(.upArrow) { move(-1, in: list); return .handled }
@@ -258,17 +256,18 @@ struct PromptListPage: View {
         return HStack(spacing: 6) {
             Text(count == 1 ? "1 prompt" : "\(count) prompts").foregroundStyle(.secondary)
             if pinned > 0 {
-                Text("·").foregroundStyle(.tertiary)
-                Text("\(pinned) pinned").foregroundStyle(.tertiary)
+                Text("·").foregroundStyle(Theme.readout)
+                Text("\(pinned) pinned").foregroundStyle(Theme.readout)
             }
             if store.settings.pasteOnUse {
-                Text("·").foregroundStyle(.tertiary)
+                Text("·").foregroundStyle(Theme.readout)
                 Text(PromptStore.canPaste ? "↩ pastes" : "↩ copies")
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Theme.readout)
                     .help(PromptStore.canPaste ? "Picking a prompt pastes it into the app in front" : "Allow Vibe Kit in Accessibility settings to paste")
             }
         }
         .font(.system(size: 11, design: .monospaced))
+        .monospacedDigit()
         .lineLimit(1)
     }
 
@@ -336,21 +335,25 @@ struct PromptListPage: View {
         selection = id
     }
 
-    private func shortcuts(_ list: [Prompt]) -> some View {
-        let selected = active(in: list)
-        return ZStack {
+    private var visiblePrompts: [Prompt] { PromptLibrary.search(prompts.prompts, query: query) }
+
+    private var shortcuts: some View {
+        ZStack {
             Button("") { route = .prompt(nil) }.keyboardShortcut("n", modifiers: .command)
-            Button("") { if let selected { route = .prompt(selected.id) } }.keyboardShortcut("e", modifiers: .command)
-            Button("") { if let selected { prompts.togglePin(selected) } }.keyboardShortcut("p", modifiers: .command)
-            Button("") { if let selected { copyOnly(selected) } }.keyboardShortcut("c", modifiers: [.command, .shift])
+            Button("") { if let selected = active(in: visiblePrompts) { route = .prompt(selected.id) } }.keyboardShortcut("e", modifiers: .command)
+            Button("") { if let selected = active(in: visiblePrompts) { prompts.togglePin(selected) } }.keyboardShortcut("p", modifiers: .command)
+            Button("") { if let selected = active(in: visiblePrompts) { copyOnly(selected) } }.keyboardShortcut("c", modifiers: [.command, .shift])
             // While you type, ⌘⌫ deletes to the start of the line, as in any text field. It deletes only a prompt
             // you picked, never the fallback, so pressing it once more after the search clears deletes nothing.
-            Button("") { if let picked = list.first(where: { $0.id == selection }) { prompts.delete(picked) } }
+            Button("") { if query.isEmpty, let picked = visiblePrompts.first(where: { $0.id == selection }) { prompts.delete(picked) } }
                 .keyboardShortcut(.delete, modifiers: .command)
                 .disabled(!query.isEmpty)
             Button("") { route = .settings }.keyboardShortcut(",", modifiers: .command)
             ForEach(1..<10) { number in
-                Button("") { if number <= list.count { selection = list[number - 1].id; use(list[number - 1]) } }
+                Button("") {
+                    let list = visiblePrompts
+                    if number <= list.count { selection = list[number - 1].id; use(list[number - 1]) }
+                }
                     .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
             }
             Button("") { NSApp.terminate(nil) }.keyboardShortcut("q", modifiers: .command)
@@ -378,9 +381,9 @@ struct PromptRow: View {
     let onDelete: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            gauge
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 8) {
+            gauge.accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
                 // A one-line prompt has nothing to preview, so its title may take both lines.
                 let preview = prompt.preview
                 Text(prompt.displayTitle)
@@ -435,8 +438,8 @@ struct PromptRow: View {
             Image(systemName: "pin.fill")
                 .font(.system(size: 9.5, weight: .semibold))
                 .foregroundStyle(Theme.violet)
-                .rotationEffect(.degrees(35))
-                .frame(width: 10, height: 26)
+                .rotationEffect(.degrees(25))
+                .frame(width: 12, height: 26)
         } else {
             ZStack(alignment: .bottom) {
                 Capsule().fill(Color.primary.opacity(0.08))
@@ -444,7 +447,7 @@ struct PromptRow: View {
                     .frame(height: heat > 0 ? max(4, 26 * heat) : 0)
             }
             .frame(width: 3, height: 26)
-            .frame(width: 10)
+            .frame(width: 12)
         }
     }
 
@@ -454,6 +457,9 @@ struct PromptRow: View {
             Label("Copied", systemImage: "checkmark")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Theme.violet)
+                .padding(.horizontal, 7)
+                .frame(height: 22)
+                .background(Capsule().fill(Theme.violet.opacity(0.09)))
                 .transition(.opacity)
         } else if isSelected {
             HStack(spacing: 2) {
@@ -465,12 +471,13 @@ struct PromptRow: View {
         } else {
             VStack(alignment: .trailing, spacing: 2) {
                 if number <= 9 {
-                    Text("⌘\(number)").font(.system(size: 10, weight: .medium, design: .rounded)).foregroundStyle(.tertiary)
+                    Text("⌘\(number)").font(.system(size: 10, weight: .medium, design: .rounded)).foregroundStyle(Theme.readout)
                 }
                 Text(usage)
                     .font(.system(size: 9.5, design: .monospaced))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Theme.readout)
             }
+            .monospacedDigit()
             .lineLimit(1)
             .fixedSize()
         }
@@ -518,11 +525,15 @@ struct PromptEditor: View {
                     .font(.system(size: 14, weight: .semibold))
                     .focused($focus, equals: .title)
                     .onSubmit { focus = .text }
+                    .padding(.vertical, 3)
+                    .overlay(alignment: .bottom) {
+                        if focus == .title { Rectangle().fill(Theme.violet).frame(height: 1) }
+                    }
                 ZStack(alignment: .topLeading) {
                     if text.isEmpty {
                         Text("Write or paste the prompt…")
                             .font(.system(size: 12.5))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(Theme.readout)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 8)
                             .allowsHitTesting(false)
@@ -532,9 +543,10 @@ struct PromptEditor: View {
                         .scrollContentBackground(.hidden)
                         .focused($focus, equals: .text)
                 }
-                .padding(4)
+                .padding(8)
                 .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.045)))
-                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.primary.opacity(focus == .text ? 0.14 : 0.06)))
+                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(focus == .text ? Theme.violet.opacity(0.78) : Color.primary.opacity(0.16),
+                                  lineWidth: focus == .text ? 1.25 : 0.75))
             }
             .padding(14)
             Divider().opacity(0.6)
@@ -545,21 +557,23 @@ struct PromptEditor: View {
                 } else {
                     Text("\(text.count.formatted()) characters · \(Format.tokens(text))")
                         .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.readout)
                 }
                 Spacer()
                 if let current = savedID.flatMap(prompts.prompt) {
-                    Button("Delete") {
+                    Button(role: .destructive) {
                         pendingSave?.cancel()
                         pendingSave = nil
                         prompts.delete(current)
                         savedID = nil
                         text = ""
                         back()
+                    } label: {
+                        Text("Delete").font(.system(size: 11, weight: .medium))
+                            .padding(.horizontal, 8).frame(height: 24)
                     }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Theme.danger)
+                    .buttonStyle(PanelButtonStyle(ink: Theme.danger, hoverInk: Theme.danger, tint: Theme.danger))
                 }
             }
             .padding(.horizontal, 16)

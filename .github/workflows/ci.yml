@@ -17,5 +17,11 @@ jobs:
         run: swift build -c release
       - name: Test
         run: swift test
+      - name: Release scripts
+        run: scripts/test-release-scripts.sh
       - name: Bundle
         run: ./scripts/build-app.sh
+      - name: Check the bundle
+        run: |
+          codesign --verify --deep --strict "build/Vibe Kit.app"
+          "build/Vibe Kit.app/Contents/MacOS/VibeKit" --list > /dev/null

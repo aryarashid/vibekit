@@ -106,6 +106,8 @@ To check it after a lid close, run `pmset -g log | grep -iE 'clamshell|sleep'` a
 
 The app is signed with a Developer ID and notarized by Apple, so it opens without a warning. It runs on Apple silicon and Intel, on macOS 14 or later.
 
+Releases after 1.3.0 keep themselves up to date: Vibe Kit checks GitHub once a day, downloads an update in the background and installs it when the app next quits or restarts. Change that under Settings › Updates, or pick **Check for Updates…** from the menu bar icon's right-click menu. Copies of 1.3.0 or older need one manual download.
+
 ### Build from source
 
 You need macOS 14 or later and Swift 6 (Xcode 16 or later, or the Command Line Tools).
@@ -118,7 +120,7 @@ cd vibekit
 
 The script builds a release binary, wraps it in `Vibe Kit.app`, signs it ad hoc, copies it to `/Applications` (or `~/Applications`) and starts it. To build without installing, run `./scripts/build-app.sh`. Set `UNIVERSAL=1` for a binary that runs on Apple silicon and Intel.
 
-To build a signed and notarized `Vibe-Kit.dmg` for a release, run `VERSION=x.y.z ./scripts/release.sh`. It needs a Developer ID Application certificate and App Store Connect API credentials, described at the top of the script.
+Releases are built by the Release workflow when the `VERSION` file is bumped on main. To build a signed and notarized release on your Mac instead, run `./scripts/release.sh`. Both are described in [docs/RELEASING.md](docs/RELEASING.md).
 
 The first time it runs from Applications, Vibe Kit turns on Launch at Login. Turn it off in Settings, or from the menu bar icon's right-click menu.
 
@@ -173,7 +175,7 @@ Measure it on your own machine:
 
 ## Privacy
 
-Everything Vibe Kit shows comes from your own machine. Its only network requests go to your own local dev servers, to read each one's page title. To restart a server, Vibe Kit reads that process's environment variables and keeps them in memory only. They are never written to disk, logged or shown.
+Everything Vibe Kit shows comes from your own machine. It makes two kinds of network request. It asks your own local dev servers for their page titles. Once a day it fetches the update feed (`appcast.xml`) from GitHub, and downloads the update if there is one. The update check sends no system profile, analytics or identifiers, only what any download sends: your IP address and the app's version in the user agent. Turn the checks off under Settings › Updates. Builds from source never check. To restart a server, Vibe Kit reads that process's environment variables and keeps them in memory only. They are never written to disk, logged or shown.
 
 ## Command line
 

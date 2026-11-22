@@ -17,14 +17,14 @@ struct ServerRow: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                port
+            HStack(spacing: 0) {
+                port.padding(.trailing, Theme.rowGap)
                 VStack(alignment: .leading, spacing: 2) {
                     titleLine
                     metaLine
                 }
-                Spacer(minLength: 4)
-                trailing
+                Spacer(minLength: 6)
+                trailing.fixedSize()
             }
             .padding(.horizontal, 10)
             .frame(height: 48)
@@ -93,20 +93,28 @@ struct ServerRow: View {
     }
 
     private var titleLine: some View {
+        ViewThatFits(in: .horizontal) {
+            title(compact: false)
+            title(compact: true)
+        }
+        .help(server.title)
+    }
+
+    private func title(compact: Bool) -> some View {
         HStack(spacing: 5) {
             Text(server.title)
                 .font(Theme.titleFont)
                 .lineLimit(1)
                 .truncationMode(.tail)
             if let worktree = server.project?.worktree {
-                Tag(text: "worktree", help: "Linked worktree \(worktree)", tint: Theme.violet)
+                Tag(text: "worktree", help: "Linked worktree \(worktree)", tint: Theme.violet, symbol: compact ? "arrow.triangle.branch" : nil)
             }
             if let shared = server.ports.first(where: { store.sharedPorts.contains($0.port) }) {
                 Tag(text: "shared port", help: "Another server also listens on port \(shared.port). localhost:\(shared.port) may reach either one, depending on IPv4 or IPv6.",
-                    tint: Theme.warning)
+                    tint: Theme.warning, symbol: compact ? "square.on.square" : nil)
             }
             if server.isExposed && server.category == .dev {
-                Tag(text: "LAN", help: "Reachable from other devices on your network", tint: Theme.cyan)
+                Tag(text: "LAN", help: "Reachable from other devices on your network", tint: Theme.cyan, symbol: compact ? "wifi" : nil)
             }
         }
     }
@@ -141,6 +149,7 @@ struct ServerRow: View {
                 Text("·").foregroundStyle(.tertiary).layoutPriority(2)
             }
             Text(Format.uptime(since: server.startDate))
+                .monospacedDigit()
                 .foregroundStyle(.secondary)
                 .layoutPriority(2)
                 .help("Started \(server.startDate.formatted(date: .abbreviated, time: .shortened))")
@@ -195,13 +204,14 @@ struct ServerRow: View {
                 HStack(spacing: 0) {
                     // CPU turns amber, then red, when a server runs hot.
                     Text(Format.cpu(server.cpu))
-                        .foregroundStyle(Theme.heat(server.cpu).map(AnyShapeStyle.init) ?? AnyShapeStyle(.tertiary))
+                        .foregroundStyle(Theme.heat(server.cpu).map(AnyShapeStyle.init) ?? AnyShapeStyle(Theme.readout))
                     if server.memory > 0 {
                         Text(" · \(Format.memory(server.memory))")
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(Theme.readout)
                     }
                 }
-                .font(.system(size: 9.5, design: .monospaced))
+                .font(Theme.monoSmall)
+                .monospacedDigit()
                 .lineLimit(1)
                 .fixedSize()
             }
@@ -273,9 +283,13 @@ struct Tag: View {
     let text: String
     var help: String?
     var tint: Color = .secondary
+    var symbol: String?
 
     var body: some View {
-        Text(text)
+        Group {
+            if let symbol { Image(systemName: symbol).accessibilityLabel(text) }
+            else { Text(text) }
+        }
             .font(.system(size: 9, weight: .semibold))
             .kerning(0.3)
             .foregroundStyle(tint)
