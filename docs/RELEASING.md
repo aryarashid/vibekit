@@ -21,7 +21,7 @@ Bump `VERSION` (for example `1.3.0` to `1.4.0`) in a PR and merge it. The **Rele
 
 Installed copies find the update on their next daily check, or straight away from **Check for Updates…**.
 
-Pushes to main that don't bump `VERSION` skip the release and stay green. Docs-only pushes don't start the workflow at all. Pushing a `v1.4.0` tag, or running the workflow from the Actions tab, also releases. Those two fail loudly when secrets are missing, and a tag must match `VERSION`.
+Pushes to main that don't bump `VERSION` skip the release and stay green. Docs-only pushes don't start the workflow at all. Running the workflow from the Actions tab on `main` also releases, and fails loudly when secrets are missing. Non-`main` branches and tag pushes cannot trigger the release workflow, so signing secrets only ever run on trusted `main` commits.
 
 **Versions.** `CFBundleShortVersionString` comes from `VERSION`. `CFBundleVersion` is `git rev-list --count HEAD`, which only goes up on main. Sparkle compares that number, and the workflow refuses a build that isn't newer than the one in the live appcast.
 

@@ -29,7 +29,6 @@ check() {
 version="$(tr -d '[:space:]' < VERSION)"
 secrets=(HAS_DEVELOPER_ID_P12_BASE64=true HAS_DEVELOPER_ID_P12_PASSWORD=true HAS_NOTARY_KEY_P8=true HAS_NOTARY_KEY_ID=true HAS_SPARKLE_PRIVATE_KEY=true)
 main=(EVENT_NAME=push REF_TYPE=branch REF_NAME=main PREFLIGHT_HEAD_COMMIT=aaaa111 PREFLIGHT_TAG_COMMIT=none PREFLIGHT_APPCAST_STATE=bootstrap PREFLIGHT_BUILD=100)
-tag=(EVENT_NAME=push REF_TYPE=tag "REF_NAME=v$version" PREFLIGHT_HEAD_COMMIT=aaaa111 PREFLIGHT_TAG_COMMIT=aaaa111 PREFLIGHT_APPCAST_STATE=bootstrap PREFLIGHT_BUILD=100)
 manual=(EVENT_NAME=workflow_dispatch REF_TYPE=branch REF_NAME=main PREFLIGHT_HEAD_COMMIT=aaaa111 PREFLIGHT_TAG_COMMIT=none PREFLIGHT_APPCAST_STATE=bootstrap PREFLIGHT_BUILD=100)
 
 cat > "$tmp/prev-appcast.xml" <<'EOF'
@@ -43,11 +42,11 @@ printf 'not valid xml\n' > "$tmp/broken-appcast.xml"
 check "main, no secrets: skip green"            0 false "${main[@]}" PREFLIGHT_RELEASE_EXISTS=0
 check "main, already released: skip green"      0 false "${main[@]}" PREFLIGHT_RELEASE_EXISTS=1
 check "main, new version + secrets: publish"    0 true  "${main[@]}" PREFLIGHT_RELEASE_EXISTS=0 "${secrets[@]}"
-check "manual, no secrets: fail"                1 false "${manual[@]}" PREFLIGHT_RELEASE_EXISTS=0
-check "manual, already released: fail"          1 false "${manual[@]}" PREFLIGHT_RELEASE_EXISTS=1 "${secrets[@]}"
-check "tag, no secrets: fail"                   1 false "${tag[@]}" PREFLIGHT_RELEASE_EXISTS=0
-check "tag, secrets: publish"                   0 true  "${tag[@]}" PREFLIGHT_RELEASE_EXISTS=0 "${secrets[@]}"
-check "tag not matching VERSION: fail"          1 false EVENT_NAME=push REF_TYPE=tag REF_NAME=v0.0.1 PREFLIGHT_RELEASE_EXISTS=0 "${secrets[@]}"
+check "manual on main, no secrets: fail"        1 false "${manual[@]}" PREFLIGHT_RELEASE_EXISTS=0
+check "manual on main, already released: fail"  1 false "${manual[@]}" PREFLIGHT_RELEASE_EXISTS=1 "${secrets[@]}"
+check "manual on main, secrets: publish"        0 true  "${manual[@]}" PREFLIGHT_RELEASE_EXISTS=0 "${secrets[@]}"
+check "non-main branch: fail"                   1 false EVENT_NAME=workflow_dispatch REF_TYPE=branch REF_NAME=feat/other PREFLIGHT_RELEASE_EXISTS=0 "${secrets[@]}"
+check "tag ref: fail"                           1 false EVENT_NAME=push REF_TYPE=tag "REF_NAME=v$version" PREFLIGHT_RELEASE_EXISTS=0 "${secrets[@]}"
 check "existing tag on wrong commit: fail"      1 false "${main[@]}" PREFLIGHT_RELEASE_EXISTS=0 PREFLIGHT_TAG_COMMIT=bbbb222 "${secrets[@]}"
 check "existing draft release: fail"            1 false "${main[@]}" PREFLIGHT_RELEASE_EXISTS=draft "${secrets[@]}"
 check "build not newer than appcast: fail"      1 false "${main[@]}" PREFLIGHT_RELEASE_EXISTS=0 PREFLIGHT_APPCAST_STATE= PREFLIGHT_APPCAST_FILE="$tmp/prev-appcast.xml" "${secrets[@]}"

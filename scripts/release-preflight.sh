@@ -3,8 +3,8 @@
 #
 # A push to main releases when the VERSION file names a version that has no GitHub release yet.
 # Anything else on main (a fix without a version bump, or secrets not set up yet) skips with a
-# note in the job summary and exits 0, so main never goes red for it. A `v*` tag push or a manual
-# run means someone asked for a release, so missing secrets fail loudly.
+# note in the job summary and exits 0, so main never goes red for it. A manual run from main
+# means someone asked for a release, so missing secrets fail loudly. Non-main refs always fail.
 #
 # Reads EVENT_NAME, REF_TYPE and REF_NAME (GitHub's event, ref type and ref name), secret presence
 # booleans (`HAS_<SECRET>=true`, or the secret env var itself when invoked locally), and GH_TOKEN
@@ -28,7 +28,7 @@ REPO="${GITHUB_REPOSITORY:-aryarashid/vibekit}"
 OUTPUT="${GITHUB_OUTPUT:-/dev/null}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stderr}"
 
-# Only a plain push to main may skip quietly. A tag or a manual run is an explicit request.
+# Only a plain push to main may skip quietly. A manual dispatch is an explicit request.
 if [[ "$EVENT_NAME" == "push" && "$REF_TYPE" == "branch" ]]; then STRICT=0; else STRICT=1; fi
 
 say() { printf '%s\n' "$*" >> "$SUMMARY"; }
@@ -49,15 +49,15 @@ fail() {
   exit 1
 }
 
+if [[ "$REF_TYPE" != "branch" || "$REF_NAME" != "main" ]]; then
+  fail "Releases may only run from \`main\` (got \`$REF_TYPE/$REF_NAME\`)."
+fi
+
 VERSION="$(tr -d '[:space:]' < VERSION)"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "VERSION holds \`$VERSION\`, not a version like 1.4.0."
 TAG="v$VERSION"
 output version "$VERSION"
 output tag "$TAG"
-
-if [[ "$REF_TYPE" == "tag" && "$REF_NAME" != "$TAG" ]]; then
-  fail "Tag \`$REF_NAME\` doesn't match the VERSION file (\`$VERSION\`). Bump VERSION in the tagged commit."
-fi
 
 if [[ -n "${PREFLIGHT_RELEASE_EXISTS:-}" ]]; then
   EXISTS="$PREFLIGHT_RELEASE_EXISTS"

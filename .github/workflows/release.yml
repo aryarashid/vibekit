@@ -5,12 +5,14 @@ name: Release
 #
 # - Push to main: releases if VERSION was bumped. Otherwise, or if the secrets aren't set up yet,
 #   it skips with a note in the job summary and stays green.
-# - Push a v* tag, or run it by hand: same, but missing secrets fail the run.
+# - Run manually from main (workflow_dispatch): same, but missing secrets fail the run.
+#
+# Only main may run this workflow so unmerged branches or unprotected tags can never invoke
+# secret-bearing signing steps.
 on:
   push:
     branches: [main]
-    tags: ['v*']
-    # Docs-only commits never start it. Tag pushes ignore this list.
+    # Docs-only commits never start it.
     paths:
       - VERSION
       - Package.swift
@@ -35,6 +37,7 @@ permissions:
 
 jobs:
   preflight:
+    if: github.ref == 'refs/heads/main'
     runs-on: macos-latest
     timeout-minutes: 10
     outputs:
@@ -66,7 +69,7 @@ jobs:
   # Tests run in a separate read-only job with zero signing credentials in the environment.
   test:
     needs: preflight
-    if: needs.preflight.outputs.publish == 'true'
+    if: github.ref == 'refs/heads/main' && needs.preflight.outputs.publish == 'true'
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
@@ -78,7 +81,7 @@ jobs:
 
   release:
     needs: [preflight, test]
-    if: needs.preflight.outputs.publish == 'true'
+    if: github.ref == 'refs/heads/main' && needs.preflight.outputs.publish == 'true'
     runs-on: macos-latest
     timeout-minutes: 60
     permissions:
