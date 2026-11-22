@@ -109,7 +109,8 @@ final class LidSleepHelperTests: XCTestCase {
     }
 
     func testDisabledAndInvalidConfigs() throws {
-        try write("lid", "Yes")
+        // Lid open, so a config read as valid would show up as `disablesleep 1`.
+        try write("lid", "No")
         try write("power", "Battery")
         try write("percent", "1")
         let configs: [String?] = [nil, "0", "abc", "20", "45; rm -rf /", "$(touch pwned)",
@@ -225,5 +226,21 @@ final class LidSleepHelperTests: XCTestCase {
         try write("app-path", directory.appendingPathComponent("Trashed.app").path)
         try runHelper(environment: ["VIBEKIT_LID_APP_FILE": appFile.path])
         XCTAssertEqual(try lines(), ["disablesleep 1", "disablesleep 0"])
+    }
+
+    func testASmallBackwardsClockStepStillSleepsOnTime() throws {
+        try runHelper()
+        try write("lid", "Yes")
+        try runHelper()
+        for minute in stride(from: 1, through: 44, by: 1) {
+            try write("now", String(1000 + minute * 60))
+            try runHelper()
+        }
+        // The clock is corrected back ten minutes, then one more minute passes.
+        try write("now", String(1000 + 34 * 60))
+        try runHelper()
+        try write("now", String(1000 + 35 * 60))
+        try runHelper()
+        XCTAssertEqual(try lines(), ["disablesleep 1", "disablesleep 0", "sleepnow"])
     }
 }

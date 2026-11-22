@@ -138,7 +138,12 @@ struct SettingsPage: View {
         .frame(height: 30)
         Group {
             if let error = settings.lidHelperError {
-                lidNotice(error, warning: true)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    lidNotice(error, warning: true)
+                    Spacer(minLength: 0)
+                    // The way out of a helper that cannot be switched off.
+                    if settings.lidHelperInstalled { removeButton }
+                }
             } else if settings.lidHelperBusy {
                 lidNotice("Installing the helper…")
             } else if settings.lidHelperPaused {
@@ -151,10 +156,7 @@ struct SettingsPage: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
-                    Button("Remove") { Task { await settings.removeLidHelper() } }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Theme.violet)
-                        .fontWeight(.semibold)
+                    removeButton
                 }
             } else {
                 lidNotice("Turning this on installs a small helper and asks for your password once.")
@@ -163,6 +165,14 @@ struct SettingsPage: View {
         .font(Theme.metaFont)
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
+    }
+
+    private var removeButton: some View {
+        Button("Remove") { Task { await settings.removeLidHelper() } }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.violet)
+            .fontWeight(.semibold)
+            .disabled(settings.lidHelperBusy)
     }
 
     private func lidNotice(_ text: String, warning: Bool = false) -> some View {

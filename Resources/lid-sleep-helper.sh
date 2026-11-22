@@ -20,7 +20,8 @@ read_minutes() {
     # read more and NUL bytes are not silently dropped the way bash drops them.
     local hex byte text=''
     hex=$(/usr/bin/od -An -v -tx1 -N 17 -- "$config" 2>/dev/null) || return
-    read -r -a bytes <<< "$hex"
+    # od prints 16 bytes a line, and read takes one line, so join them first.
+    read -r -a bytes <<< "${hex//$'\n'/ }"
     (( ${#bytes[@]} <= 16 )) || return
     for byte in "${bytes[@]}"; do
         case $byte in
@@ -117,6 +118,12 @@ tick() {
     now=$((10#$now))
     # A gap much longer than one poll means the Mac was asleep in between.
     if [[ -n $last_tick ]] && (( now - last_tick > 60 || now < last_tick )); then slept=1; fi
+    # A clock set backwards must not stretch the delay: move the start back by the same step,
+    # so the time already spent with the lid closed still counts.
+    if [[ -n $last_tick && -n $closed_at ]] && (( now < last_tick )); then
+        closed_at=$(( closed_at - (last_tick - now) ))
+        (( closed_at >= 0 )) || closed_at=0
+    fi
     last_tick=$now
 
     if [[ $lid == No ]]; then
@@ -141,7 +148,6 @@ tick() {
         fi
     else
         docked=0
-        # A clock set backwards must not stretch the delay.
         if [[ -z $closed_at ]] || (( now < closed_at )); then
             closed_at=$now
             log_change "Lid closed. Timer started."
