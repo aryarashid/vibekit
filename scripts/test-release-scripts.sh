@@ -27,9 +27,9 @@ check() {
 
 version="$(tr -d '[:space:]' < VERSION)"
 secrets=(DEVELOPER_ID_P12_BASE64=x DEVELOPER_ID_P12_PASSWORD=x NOTARY_KEY_P8=x NOTARY_KEY_ID=x SPARKLE_PRIVATE_KEY=x)
-main=(EVENT_NAME=push REF_TYPE=branch REF_NAME=main PREFLIGHT_PREVIOUS_BUILD=none)
-tag=(EVENT_NAME=push REF_TYPE=tag "REF_NAME=v$version" PREFLIGHT_PREVIOUS_BUILD=none)
-manual=(EVENT_NAME=workflow_dispatch REF_TYPE=branch REF_NAME=main PREFLIGHT_PREVIOUS_BUILD=none)
+main=(EVENT_NAME=push REF_TYPE=branch REF_NAME=main PREFLIGHT_PREVIOUS_BUILD=none PREFLIGHT_BUILD=100)
+tag=(EVENT_NAME=push REF_TYPE=tag "REF_NAME=v$version" PREFLIGHT_PREVIOUS_BUILD=none PREFLIGHT_BUILD=100)
+manual=(EVENT_NAME=workflow_dispatch REF_TYPE=branch REF_NAME=main PREFLIGHT_PREVIOUS_BUILD=none PREFLIGHT_BUILD=100)
 
 check "main, no secrets: skip green"            0 false "${main[@]}" PREFLIGHT_RELEASE_EXISTS=0
 check "main, already released: skip green"      0 false "${main[@]}" PREFLIGHT_RELEASE_EXISTS=1
@@ -39,7 +39,8 @@ check "manual, already released: fail"          1 false "${manual[@]}" PREFLIGHT
 check "tag, no secrets: fail"                   1 false "${tag[@]}" PREFLIGHT_RELEASE_EXISTS=0
 check "tag, secrets: publish"                   0 true  "${tag[@]}" PREFLIGHT_RELEASE_EXISTS=0 "${secrets[@]}"
 check "tag not matching VERSION: fail"          1 false EVENT_NAME=push REF_TYPE=tag REF_NAME=v0.0.1 PREFLIGHT_RELEASE_EXISTS=0 "${secrets[@]}"
-check "build not newer than appcast: fail"      1 false "${main[@]}" PREFLIGHT_RELEASE_EXISTS=0 PREFLIGHT_PREVIOUS_BUILD=999999 "${secrets[@]}"
+check "build not newer than appcast: fail"      1 false "${main[@]}" PREFLIGHT_RELEASE_EXISTS=0 PREFLIGHT_PREVIOUS_BUILD=100 "${secrets[@]}"
+check "draft left by a failed run: publish"     0 true  "${main[@]}" PREFLIGHT_RELEASE_EXISTS=draft "${secrets[@]}"
 
 # A throwaway key signs a fake archive; the signature checks out against the derived public
 # key, a tampered archive does not, and the appcast is well-formed with the right fields.
@@ -65,6 +66,7 @@ assert enc.get("url") == "https://example.com/Vibe Kit & co.zip"
 assert enc.get("length") == "4097"
 assert enc.get("{%s}edSignature" % ns["sparkle"]) == sys.argv[2]
 assert "Fixes & things ]]> <b>" in item.findtext("description")
+assert item.find("description").get("{%s}descriptionFormat" % ns["sparkle"]) == "markdown"
 EOF
 then echo "ok   appcast parses"; else echo "FAIL appcast"; fails=$((fails + 1)); fi
 

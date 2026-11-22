@@ -146,7 +146,7 @@ final class Updater {
     /// An accessory app's windows open behind the app in front unless it activates first.
     fileprivate func prepareToShowUI() {
         willShowUpdateUI?()
-        NSApp.activate()
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func observe(_ updater: SPUUpdater) {

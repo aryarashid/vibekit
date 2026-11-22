@@ -8,8 +8,8 @@
 #
 # Reads EVENT_NAME, REF_TYPE and REF_NAME (GitHub's event, ref type and ref name), the release
 # secrets as environment variables, and GH_TOKEN for `gh`. Writes publish, version, tag and build
-# to $GITHUB_OUTPUT. For tests: PREFLIGHT_RELEASE_EXISTS=0|1 and PREFLIGHT_PREVIOUS_BUILD=<n|none>
-# stand in for the GitHub lookups.
+# to $GITHUB_OUTPUT. For tests: PREFLIGHT_RELEASE_EXISTS=0|1|draft, PREFLIGHT_PREVIOUS_BUILD=<n|none>
+# and PREFLIGHT_BUILD=<n> stand in for the GitHub and git lookups.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -54,12 +54,16 @@ fi
 
 if [[ -n "${PREFLIGHT_RELEASE_EXISTS:-}" ]]; then
   EXISTS="$PREFLIGHT_RELEASE_EXISTS"
-elif gh release view "$TAG" --repo "$REPO" --json tagName >/dev/null 2>&1; then
-  EXISTS=1
+elif DRAFT="$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft 2>/dev/null)"; then
+  [[ "$DRAFT" == "true" ]] && EXISTS=draft || EXISTS=1
 else
   EXISTS=0
 fi
-if [[ "$EXISTS" == "1" ]]; then
+if [[ "$EXISTS" == "draft" ]]; then
+  # A run that failed between creating the draft and publishing it. The publish step replaces it.
+  echo "::notice::Found an unpublished draft for $TAG; it will be replaced."
+  output replace_draft true
+elif [[ "$EXISTS" == "1" ]]; then
   [[ "$EVENT_NAME" == "workflow_dispatch" ]] && fail "Vibe Kit $VERSION is already released. Bump VERSION to release again."
   skip "Vibe Kit $VERSION is already released. To ship what's on main, bump the VERSION file."
 fi
@@ -76,8 +80,12 @@ if (( ${#MISSING[@]} )); then
 fi
 
 # The build number is the commit count, so a shallow clone would make every build look like 1.
-[[ "$(git rev-parse --is-shallow-repository)" == "false" ]] || fail "The checkout is shallow. Use fetch-depth: 0."
-BUILD="$(git rev-list --count HEAD)"
+if [[ -n "${PREFLIGHT_BUILD:-}" ]]; then
+  BUILD="$PREFLIGHT_BUILD"
+else
+  [[ "$(git rev-parse --is-shallow-repository)" == "false" ]] || fail "The checkout is shallow. Use fetch-depth: 0."
+  BUILD="$(git rev-list --count HEAD)"
+fi
 if [[ -n "${PREFLIGHT_PREVIOUS_BUILD:-}" ]]; then
   PREVIOUS="$PREFLIGHT_PREVIOUS_BUILD"
 else

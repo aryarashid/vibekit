@@ -111,6 +111,8 @@ jobs:
           VERSION: ${{ steps.preflight.outputs.version }}
           TAG: ${{ steps.preflight.outputs.tag }}
         run: |
+          # A draft left by an earlier failed run would block the tag name.
+          if [[ "${{ steps.preflight.outputs.replace_draft }}" == "true" ]]; then gh release delete "$TAG" --yes; fi
           # A draft first, so releases/latest never points at a release without its appcast.
           gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "Vibe Kit $VERSION" \
             --notes-file build/release-notes.md \

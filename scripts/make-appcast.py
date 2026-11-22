@@ -23,7 +23,7 @@ def build(args: argparse.Namespace, notes: str) -> str:
     date = email.utils.formatdate(usegmt=True)
     description = ""
     if notes.strip():
-        description = f'\n      <description sparkle:format="markdown">{cdata(notes.strip())}</description>'
+        description = f'\n      <description sparkle:descriptionFormat="markdown">{cdata(notes.strip())}</description>'
     full_notes = ""
     if args.release_page:
         full_notes = f"\n      <sparkle:fullReleaseNotesLink>{escape(args.release_page)}</sparkle:fullReleaseNotesLink>"
