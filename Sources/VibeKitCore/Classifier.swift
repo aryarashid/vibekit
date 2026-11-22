@@ -105,9 +105,10 @@ public struct Classifier: Sendable {
         return nil
     }
 
-    /// Executables installed system-wide, by Homebrew, or into a toolchain's bin folder, rather than built in a workspace.
+    /// Executables installed system-wide, by Homebrew, into a toolchain's bin folder, or by a package manager (such as
+    /// `workerd` or `esbuild` inside node_modules), rather than built in a workspace.
     private func isInstalledTool(_ executable: String) -> Bool {
-        guard executable.hasPrefix("/") else { return true }
+        guard executable.hasPrefix("/"), !executable.contains("/node_modules/") else { return true }
         for prefix in ["/usr/", "/bin/", "/sbin/", "/System/", "/Library/", "/opt/", "/Applications/", "/nix/", "/private/", "/var/"]
             where executable.hasPrefix(prefix) {
             return true

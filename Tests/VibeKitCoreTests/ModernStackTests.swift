@@ -78,6 +78,9 @@ struct ModernStackTests {
         #expect(c.classify(facts("/opt/homebrew/bin/kubectl", ["kubectl", "port-forward", "svc/api", "8080"], cwd: "/Users/dev/code/api")) == .tool)
         #expect(c.classify(facts("/Users/dev/go/bin/dlv", ["dlv", "debug"], cwd: "/Users/dev/code/api")) == .tool)
         #expect(c.classify(facts("/Users/dev/.cargo/bin/some-tool", ["some-tool"], cwd: "/Users/dev/code/api")) == .tool)
+        // Native helpers that a package manager installed, in a workers-rs or Go repository that also has package.json.
+        #expect(c.classify(facts("/Users/dev/code/api/node_modules/@esbuild/darwin-arm64/bin/esbuild", ["esbuild", "--service"],
+                                 cwd: "/Users/dev/code/api")) == .tool)
         // Outside a workspace nothing is checked.
         #expect(c.classify(facts("/Users/dev/code/api/bin/api", ["api"], cwd: "/")) == .tool)
     }
