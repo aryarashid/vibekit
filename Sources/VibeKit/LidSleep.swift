@@ -68,6 +68,18 @@ enum LidSleep {
         return sha256(installed) == helperSHA256 && app == Bundle.main.bundlePath ? .current : .outdated
     }
 
+    /// Whether launchd has the helper loaded. Files on disk alone do not mean it is running.
+    static func isLoaded() -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["print", "system/\(label)"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return false }
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    }
+
     /// The minutes the daemon will use, read the same strict way it reads them. 0 means off.
     static func readMinutes() -> Int {
         guard let data = FileManager.default.contents(atPath: configPath), data.count <= 16 else { return 0 }

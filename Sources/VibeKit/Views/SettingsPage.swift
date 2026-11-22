@@ -132,24 +132,20 @@ struct SettingsPage: View {
             .labelsHidden()
             .fixedSize()
             .controlSize(.small)
+            .disabled(settings.lidHelperBusy)
         }
         .padding(.horizontal, 16)
         .frame(height: 30)
         Group {
-            if settings.lidStayAwake && settings.lidHelperOutdated {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning)
-                    Text("This version of Vibe Kit has a newer helper.")
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                    Button("Update") { Task { await settings.setLidStayAwake(true) } }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Theme.violet)
-                        .fontWeight(.semibold)
-                        .disabled(settings.lidHelperBusy)
-                }
-            } else if !settings.lidStayAwake && settings.lidHelperInstalled {
+            if let error = settings.lidHelperError {
+                lidNotice(error, warning: true)
+            } else if settings.lidHelperBusy {
+                lidNotice("Installing the helper…")
+            } else if settings.lidHelperPaused {
+                lidNotice("Paused. The helper was set up for another copy of Vibe Kit, or has stopped. Switch this on to set it up again.", warning: true)
+            } else if settings.lidStayAwake {
+                lidNotice("Agents keep working with the lid closed, then the Mac sleeps. It sleeps right away at 15% battery or less, and never on its own while docked to a display. While this is on, the Mac also won't go to sleep by itself with the lid open.")
+            } else if settings.lidHelperInstalled {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text("Off. The helper is installed but does nothing.")
                         .foregroundStyle(.secondary)
@@ -159,19 +155,25 @@ struct SettingsPage: View {
                         .buttonStyle(.plain)
                         .foregroundStyle(Theme.violet)
                         .fontWeight(.semibold)
-                        .disabled(settings.lidHelperBusy)
                 }
             } else {
-                Text(settings.lidStayAwake
-                    ? "Agents keep working with the lid closed, then the Mac sleeps. It sleeps at once below 15% battery, and never on its own while docked to a display. While this is on, the Mac also won't idle to sleep with the lid open."
-                    : "Turning this on installs a small helper and asks for your password once.")
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                lidNotice("Turning this on installs a small helper and asks for your password once.")
             }
         }
         .font(Theme.metaFont)
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
+    }
+
+    private func lidNotice(_ text: String, warning: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            if warning {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning)
+            }
+            Text(text)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private func openAccessibilitySettings() {

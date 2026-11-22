@@ -25,12 +25,16 @@ final class Settings {
     private(set) var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
     /// How long the Mac stays awake after the lid closes, when that is on. Kept while it is off.
     var lidSleepMinutes: Int { didSet { defaults.set(lidSleepMinutes, forKey: "lidSleepMinutes") } }
-    /// Whether the lid sleep helper is installed and has a delay set. Read from disk, not saved.
+    /// Whether the lid sleep helper is installed for this copy, running, and has a delay set.
+    /// Read from the system, not saved.
     private(set) var lidStayAwake = false
     /// The helper is on this Mac, even if its delay is off.
     private(set) var lidHelperInstalled = false
-    /// The installed helper is older than the one in this copy of the app.
-    private(set) var lidHelperOutdated = false
+    /// A delay is set but the helper is not acting on it: it belongs to another copy of the
+    /// app, is out of date, or is not loaded. Switching on sets it up again.
+    private(set) var lidHelperPaused = false
+    /// Why the last change failed, shown until the next one.
+    private(set) var lidHelperError: String?
     /// The admin prompt is up or the helper is installing.
     private(set) var lidHelperBusy = false
     /// Shortcuts that are on but owned by another app, so Settings can say so. Not saved.
@@ -56,42 +60,61 @@ final class Settings {
     /// and writes 0, so turning it back on needs no password.
     func setLidStayAwake(_ on: Bool) async {
         guard !lidHelperBusy else { return }
-        if on && LidSleep.helperState() != .current {
-            let wasOn = lidStayAwake
-            lidHelperBusy = true
-            let installed = await LidSleep.install(minutes: lidSleepMinutes)
-            lidHelperBusy = false
-            // A failed install may have left a config behind; don't show it as on.
-            if !installed && !wasOn { _ = LidSleep.writeMinutes(0) }
-        } else if LidSleep.helperState() != .missing {
-            _ = LidSleep.writeMinutes(on ? lidSleepMinutes : 0)
+        lidHelperError = nil
+        defer { refreshLidStayAwake() }
+        guard on else {
+            if LidSleep.helperState() != .missing && !LidSleep.writeMinutes(0) {
+                lidHelperError = "Couldn't switch it off. Press Remove to take the helper away."
+            }
+            return
         }
-        refreshLidStayAwake()
+        // Already set up for this copy and running: just say how long.
+        if LidSleep.helperState() == .current, LidSleep.isLoaded(), LidSleep.writeMinutes(lidSleepMinutes) { return }
+        #if !DEBUG
+        guard Self.isInstalled(at: Bundle.main.bundlePath) else {
+            lidHelperError = "Move Vibe Kit to Applications first, then switch this on."
+            return
+        }
+        #endif
+        lidHelperBusy = true
+        let installed = await LidSleep.install(minutes: lidSleepMinutes)
+        lidHelperBusy = false
+        if !installed {
+            lidHelperError = "The helper wasn't installed, so the Mac will sleep when the lid closes."
+            // A failed install may have left a config behind; don't leave it half on.
+            if LidSleep.helperState() != .missing { _ = LidSleep.writeMinutes(0) }
+        }
     }
 
     func setLidSleepMinutes(_ minutes: Int) {
         lidSleepMinutes = minutes
-        if lidStayAwake { _ = LidSleep.writeMinutes(minutes) }
+        if lidStayAwake && !LidSleep.writeMinutes(minutes) {
+            lidHelperError = "Couldn't change the delay."
+        }
         refreshLidStayAwake()
     }
 
     /// Removes the helper entirely, for people who no longer want it on their Mac.
     func removeLidHelper() async {
         guard !lidHelperBusy else { return }
+        lidHelperError = nil
         lidHelperBusy = true
-        _ = await LidSleep.uninstall()
+        let removed = await LidSleep.uninstall()
         lidHelperBusy = false
+        if !removed { lidHelperError = "The helper wasn't removed." }
         refreshLidStayAwake()
     }
 
     func refreshLidStayAwake() {
         let state = LidSleep.helperState()
-        let on = state != .missing && LidSleep.readMinutes() > 0
+        let minutes = LidSleep.readMinutes()
+        let loaded = state != .missing && LidSleep.isLoaded()
+        let on = state == .current && loaded && minutes > 0
         if lidStayAwake != on { lidStayAwake = on }
         if lidHelperInstalled != (state != .missing) { lidHelperInstalled = state != .missing }
-        if lidHelperOutdated != (state == .outdated) { lidHelperOutdated = state == .outdated }
+        let paused = state != .missing && minutes > 0 && !on
+        if lidHelperPaused != paused { lidHelperPaused = paused }
         // Show the delay the helper actually uses, in case the file was changed by hand.
-        let minutes = LidSleep.readMinutes()
         if on && minutes != lidSleepMinutes { lidSleepMinutes = minutes }
     }
 
