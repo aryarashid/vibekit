@@ -68,7 +68,8 @@ public enum Probe {
 
     /// Requests stay on this Mac. A redirect, such as to a sign-in page, is the answer itself: following it would
     /// contact another site and report that site's status and title as the dev server's.
-    /// Local HTTPS servers use certificates made for development, so their certificate is accepted, for local hosts only.
+    /// Local HTTPS servers use certificates made for development, so their certificate is accepted, for hosts on this Mac
+    /// only: loopback, or one of this Mac's own addresses when a server listening on the network is probed there.
     private final class LocalOnly: NSObject, URLSessionTaskDelegate {
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                         newRequest request: URLRequest) async -> URLRequest? { nil }
@@ -82,9 +83,15 @@ public enum Probe {
         }
     }
 
-    static func isLocal(_ host: String) -> Bool {
+    /// `ownAddresses` lists this Mac's interface addresses. Any other host, including other machines on the same
+    /// private network, is not local.
+    static func isLocal(_ host: String, ownAddresses: () -> [String] = Network.localAddresses) -> Bool {
         let bare = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).lowercased()
-        return bare == "localhost" || bare.hasPrefix("127.") || bare == "::1"
+        if bare == "localhost" || bare.hasPrefix("127.") || bare == "::1" { return true }
+        // Only a literal IPv4 address can be one of ours. A name could resolve anywhere.
+        var parsed = in_addr()
+        guard inet_pton(AF_INET, bare, &parsed) == 1 else { return false }
+        return ownAddresses().contains(bare)
     }
 
     static func title(in data: Data) -> String? {
@@ -168,27 +175,36 @@ public enum Network {
 
     /// The Mac's address on the local network, for opening a dev server from a phone.
     public static func lanAddress() -> String? {
-        var head: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&head) == 0, let first = head else { return nil }
-        defer { freeifaddrs(head) }
-        var candidates: [(name: String, address: String)] = []
-        for pointer in sequence(first: first, next: { $0.pointee.ifa_next }) {
-            let entry = pointer.pointee
-            guard let addr = entry.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET),
-                  entry.ifa_flags & UInt32(IFF_UP) != 0, entry.ifa_flags & UInt32(IFF_LOOPBACK) == 0 else { continue }
-            let name = String(cString: entry.ifa_name)
-            if ["utun", "awdl", "llw", "bridge", "anpi", "ap"].contains(where: name.hasPrefix) { continue }
-            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            guard getnameinfo(addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
-            let address = String(decoding: host.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
-            if address.hasPrefix("169.254.") { continue }
-            candidates.append((name, address))
+        let candidates = ipv4Interfaces().filter { entry in
+            !["utun", "awdl", "llw", "bridge", "anpi", "ap"].contains(where: entry.name.hasPrefix) && !entry.address.hasPrefix("169.254.")
         }
         // The interface the default route uses, when it is one of these: with Ethernet and Wi-Fi both up,
         // that is the network the phone is most likely on.
         if let routed = defaultRouteAddress(), candidates.contains(where: { $0.address == routed }) { return routed }
         // Otherwise prefer Wi-Fi and Ethernet (en0, en1...) over VPN and virtual interfaces.
         return candidates.sorted { $0.name < $1.name }.first { $0.name.hasPrefix("en") }?.address ?? candidates.first?.address
+    }
+
+    /// Every IPv4 address this Mac holds on an interface that is up, loopback aside, including VPN and bridge interfaces.
+    public static func localAddresses() -> [String] {
+        ipv4Interfaces().map(\.address)
+    }
+
+    private static func ipv4Interfaces() -> [(name: String, address: String)] {
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0, let first = head else { return [] }
+        defer { freeifaddrs(head) }
+        var result: [(name: String, address: String)] = []
+        for pointer in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let entry = pointer.pointee
+            guard let addr = entry.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET),
+                  entry.ifa_flags & UInt32(IFF_UP) != 0, entry.ifa_flags & UInt32(IFF_LOOPBACK) == 0 else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
+            let address = String(decoding: host.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            result.append((String(cString: entry.ifa_name), address))
+        }
+        return result
     }
 
     /// The source address the system picks for traffic to the internet. A UDP connect sends no packets.

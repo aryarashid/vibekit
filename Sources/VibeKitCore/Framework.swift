@@ -10,15 +10,19 @@ public struct Framework: Hashable, Sendable {
     public let speaksHTTP: Bool
     /// Scheme for a connection string, such as `postgresql` or `redis`.
     public let urlScheme: String?
+    /// Web UI ports, best first, for tools that listen on several ports, such as Mailpit's 8025 next to its SMTP 1025.
+    /// One of these becomes the primary port when it is open, and its URL is always `http://`.
+    public let preferredPorts: [UInt16]
 
     public init(_ id: String, _ name: String, _ color: UInt32?, _ category: ServerCategory = .dev,
-                http: Bool = true, scheme: String? = nil) {
+                http: Bool = true, scheme: String? = nil, preferredPorts: [UInt16] = []) {
         self.id = id
         self.name = name
         self.color = color
         self.category = category
         self.speaksHTTP = http
         self.urlScheme = scheme
+        self.preferredPorts = preferredPorts
     }
 }
 
@@ -46,7 +50,7 @@ public extension Framework {
     static let wrangler = Framework("wrangler", "Wrangler", 0xF38020)
     static let vercel = Framework("vercel", "Vercel Dev", nil)
     static let netlify = Framework("netlify", "Netlify Dev", 0x00C7B7)
-    static let firebase = Framework("firebase", "Firebase Emulators", 0xFFA000)
+    static let firebase = Framework("firebase", "Firebase Emulators", 0xFFA000, preferredPorts: [4000])
     static let convex = Framework("convex", "Convex", 0xF3B01C)
     static let prismaStudio = Framework("prisma", "Prisma Studio", 0x5A67D8)
     static let drizzleStudio = Framework("drizzle", "Drizzle Studio", 0xA3C93A)
@@ -94,29 +98,39 @@ public extension Framework {
     static let redis = Framework("redis", "Redis", 0xDC382D, .database, http: false, scheme: "redis")
     static let valkey = Framework("valkey", "Valkey", 0x6983FF, .database, http: false, scheme: "redis")
     static let memcached = Framework("memcached", "Memcached", 0x7DB04B, .database, http: false)
-    static let clickhouse = Framework("clickhouse", "ClickHouse", 0xFFCC01, .database)
+    static let clickhouse = Framework("clickhouse", "ClickHouse", 0xFFCC01, .database, preferredPorts: [8123])
     static let elasticsearch = Framework("elasticsearch", "Elasticsearch", 0xFEC514, .database)
     static let opensearch = Framework("opensearch", "OpenSearch", 0x005EB8, .database)
     static let meilisearch = Framework("meilisearch", "Meilisearch", 0xFF5CAA, .database)
     static let typesense = Framework("typesense", "Typesense", 0xD52B6C, .database)
-    static let qdrant = Framework("qdrant", "Qdrant", 0xDC244C, .database)
-    static let minio = Framework("minio", "MinIO", 0xC72E49, .database)
+    static let qdrant = Framework("qdrant", "Qdrant", 0xDC244C, .database, preferredPorts: [6333])
+    static let minio = Framework("minio", "MinIO", 0xC72E49, .database, preferredPorts: [9001, 9000])
     static let influx = Framework("influx", "InfluxDB", 0x9394FF, .database)
     static let cockroach = Framework("cockroach", "CockroachDB", 0x6933FF, .database, http: false, scheme: "postgresql")
-    static let surreal = Framework("surreal", "SurrealDB", 0xFF00A0, .database)
+    static let surreal = Framework("surreal", "SurrealDB", 0xFF00A0, .database, preferredPorts: [8000])
     static let etcd = Framework("etcd", "etcd", 0x419EDA, .database, http: false)
 
     // Services
     static let docker = Framework("docker", "Docker", 0x2496ED, .service)
     static let orbstack = Framework("orbstack", "OrbStack", 0x9B6BFF, .service)
-    static let ngrok = Framework("ngrok", "ngrok", 0x3D6BFF, .service)
+    static let ngrok = Framework("ngrok", "ngrok", 0x3D6BFF, .service, preferredPorts: [4040])
     static let cloudflared = Framework("cloudflared", "Cloudflare Tunnel", 0xF38020, .service)
     static let nats = Framework("nats", "NATS", 0x27AAE1, .service, http: false, scheme: "nats")
-    static let rabbitmq = Framework("rabbitmq", "RabbitMQ", 0xFF6600, .service, http: false, scheme: "amqp")
+    static let rabbitmq = Framework("rabbitmq", "RabbitMQ", 0xFF6600, .service, http: false, scheme: "amqp", preferredPorts: [15672])
     static let ollama = Framework("ollama", "Ollama", nil, .service)
     static let lmStudio = Framework("lmstudio", "LM Studio", 0x6366F1, .service)
-    static let localstack = Framework("localstack", "LocalStack", 0x3F51C7, .service)
-    static let mailpit = Framework("mailpit", "Mailpit", 0x2EC4B6, .service)
+    static let localstack = Framework("localstack", "LocalStack", 0x3F51C7, .service, preferredPorts: [4566])
+    static let mailpit = Framework("mailpit", "Mailpit", 0x2EC4B6, .service, preferredPorts: [8025])
+
+    // AI runners, workflow engines, proxies
+    static let llamaCpp = Framework("llamacpp", "llama.cpp", 0xE86A33, .service)
+    static let vllm = Framework("vllm", "vLLM", 0x3B82F6, .service)
+    static let mlxLM = Framework("mlx-lm", "MLX LM", 0xA855F7, .service)
+    static let litellm = Framework("litellm", "LiteLLM", 0x10B981, .service)
+    static let inngest = Framework("inngest", "Inngest", 0x6366F1, .service)
+    static let temporal = Framework("temporal", "Temporal", 0x8B5CF6, .service, preferredPorts: [8233])
+    static let caddy = Framework("caddy", "Caddy", 0x1F88C0, .service)
+    static let stripe = Framework("stripe", "Stripe CLI", 0x635BFF, .service, http: false)
 
     // Everything else
     static let app = Framework("app", "App", 0x8E8E93, .other, http: false)

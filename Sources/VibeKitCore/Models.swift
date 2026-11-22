@@ -116,6 +116,11 @@ public struct Server: Identifiable, Hashable, Sendable {
     public let command: String
     public let directory: String?
     public let launch: LaunchSpec?
+    /// The app or agent that started this server, such as `Claude Code`, `Ghostty` or `launchd`, when one is known.
+    public let launcher: String?
+    /// Set for a published port of a Docker or OrbStack container. `pid` and `rootPid` then belong to the
+    /// container runtime on this Mac, so stopping them would stop every container: the app must not offer Stop.
+    public let containerName: String?
     public var cpu: Double = 0
     public var memory: UInt64 = 0
     public var processCount: Int = 1
@@ -123,7 +128,8 @@ public struct Server: Identifiable, Hashable, Sendable {
     public init(
         id: String, pid: pid_t, rootPid: pid_t, listenerPids: [pid_t], startDate: Date,
         ports: [PortBinding], framework: Framework, project: Project?, processName: String,
-        executable: String, command: String, directory: String?, launch: LaunchSpec?
+        executable: String, command: String, directory: String?, launch: LaunchSpec?,
+        launcher: String? = nil, containerName: String? = nil
     ) {
         self.id = id
         self.pid = pid
@@ -138,6 +144,19 @@ public struct Server: Identifiable, Hashable, Sendable {
         self.command = command
         self.directory = directory
         self.launch = launch
+        self.launcher = launcher
+        self.containerName = containerName
+    }
+
+    /// The same server with other ports, keeping its usage figures.
+    public func replacingPorts(_ ports: [PortBinding]) -> Server {
+        var copy = Server(id: id, pid: pid, rootPid: rootPid, listenerPids: listenerPids, startDate: startDate, ports: ports,
+                          framework: framework, project: project, processName: processName, executable: executable,
+                          command: command, directory: directory, launch: launch, launcher: launcher, containerName: containerName)
+        copy.cpu = cpu
+        copy.memory = memory
+        copy.processCount = processCount
+        return copy
     }
 
     public var category: ServerCategory { framework.category }
@@ -157,7 +176,14 @@ public struct Server: Identifiable, Hashable, Sendable {
         switch category {
         case .dev: project?.name ?? framework.name
         case .database, .service:
-            if let detail, detail.hasPrefix("/") || detail.hasPrefix("~") { (detail as NSString).lastPathComponent } else { framework.name }
+            if let detail, detail.hasPrefix("/") || detail.hasPrefix("~") {
+                (detail as NSString).lastPathComponent
+            } else if let containerName, framework.id == Framework.docker.id || framework.id == Framework.orbstack.id {
+                // A container with no recognised image, such as Supabase Studio, reads better by its own name than as "Docker".
+                containerName
+            } else {
+                framework.name
+            }
         case .other: processName
         }
     }
@@ -175,7 +201,18 @@ public struct Server: Identifiable, Hashable, Sendable {
 
     /// How this Mac reaches the primary port: `localhost`, unless the server listens on one other address only.
     public var host: String {
-        guard let binding = ports.first, !binding.isWildcard, !binding.isLocalhost else { return "localhost" }
+        guard let binding = ports.first else { return "localhost" }
+        return host(for: binding)
+    }
+
+    /// How this Mac reaches `binding`. `localhost` covers loopback and all-interfaces listeners. With
+    /// `explicitLoopback`, those name the address family instead (`127.0.0.1` or `[::1]`), for when two processes
+    /// hold the same port on IPv4 and IPv6 and `localhost` would reach whichever the system tries first.
+    public func host(for binding: PortBinding, explicitLoopback: Bool = false) -> String {
+        if binding.isWildcard || binding.isLocalhost {
+            guard explicitLoopback else { return "localhost" }
+            return binding.isIPv6 && !(binding.isWildcard && binding.acceptsIPv4) ? "[::1]" : "127.0.0.1"
+        }
         let address = binding.address.replacingOccurrences(of: "%", with: "%25")
         return binding.isIPv6 ? "[\(address)]" : address
     }
@@ -184,12 +221,26 @@ public struct Server: Identifiable, Hashable, Sendable {
 
     /// `secure` when the server answered over HTTPS only, such as Vite with a local certificate.
     public func localURL(secure: Bool) -> URL? {
-        if let scheme = framework.urlScheme {
-            return URL(string: "\(scheme)://\(host):\(primaryPort)")
-        }
-        guard framework.speaksHTTP else { return nil }
-        return URL(string: "\(secure ? "https" : "http")://\(host):\(primaryPort)")
+        localURL(for: primaryPort, secure: secure)
     }
+
+    /// The URL for one of this server's ports, for a clickable pill per port. A port in `framework.preferredPorts` is a
+    /// web UI and gets `http://`, even on a tool whose other ports take a connection string, such as RabbitMQ's 15672.
+    public func localURL(for port: UInt16, secure: Bool = false, explicitLoopback: Bool = false) -> URL? {
+        let host = ports.first { $0.port == port }.map { self.host(for: $0, explicitLoopback: explicitLoopback) } ?? "localhost"
+        let webUI = framework.preferredPorts.contains(port)
+        if let scheme = framework.urlScheme, !webUI {
+            return URL(string: "\(scheme)://\(host):\(port)")
+        }
+        guard framework.speaksHTTP || webUI else { return nil }
+        return URL(string: "\(secure ? "https" : "http")://\(host):\(port)")
+    }
+
+    /// A dev server, admin UI or app page worth opening in a browser. Connection strings and plain listeners are not.
+    public var canOpenInBrowser: Bool { framework.speaksHTTP && framework.urlScheme == nil && category != .other }
+
+    /// False once the folder the server ran from was deleted, such as a removed worktree. True when there is none.
+    public var directoryExists: Bool { directory.map { FileManager.default.fileExists(atPath: $0) } ?? true }
 
     /// The URL for another device: the primary port if it is open to the network, else the first port that is.
     /// `host` is an IPv4 address, so an IPv6-only listener gets none.

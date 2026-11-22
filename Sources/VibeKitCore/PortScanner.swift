@@ -108,7 +108,7 @@ public final class PortScanner: @unchecked Sendable {
         var seenForUsage = Set<pid_t>()
         var servers: [Server] = []
         for unit in units.values {
-            var server = builtServer(unit, now: now)
+            var server = builtServer(unit, now: now, table: table)
             if categories.contains(server.category) {
                 // An app's process tree can hold hundreds of helpers and terminals, so other listeners count only themselves.
                 let tree = server.category == .other ? server.listenerPids : descendants(of: unit.root.pid, children: children)
@@ -148,12 +148,12 @@ public final class PortScanner: @unchecked Sendable {
     private var built: [pid_t: (key: BuildKey, server: Server, at: UInt64)] = [:]
     private static let rebuildInterval: UInt64 = 12 * NSEC_PER_SEC
 
-    private func builtServer(_ unit: Unit, now: UInt64) -> Server {
+    private func builtServer(_ unit: Unit, now: UInt64, table: [pid_t: LibProc.ShortInfo]) -> Server {
         let listeners = unit.listeners.sorted { $0.0.pid < $1.0.pid }
         let key = BuildKey(start: unit.root.start, chain: unit.chain.map(\.pid),
                            listeners: listeners.map(\.0.pid), ports: listeners.flatMap(\.1))
         if let hit = built[unit.root.pid], hit.key == key, now &- hit.at < Self.rebuildInterval { return hit.server }
-        let server = makeServer(unit)
+        let server = makeServer(unit, table: table)
         built[unit.root.pid] = (key, server, now)
         return server
     }
@@ -279,7 +279,7 @@ public final class PortScanner: @unchecked Sendable {
     private static let runnerNames: Set<String> = [
         "npm", "npx", "pnpm", "pnpx", "yarn", "bun", "bunx", "deno", "uv", "uvx", "poetry", "pipenv", "hatch",
         "bundle", "rake", "mix", "cargo", "cargo-watch", "go", "air", "make", "just", "nodemon", "watchexec",
-        "dotnet", "gradle", "mvn", "foreman", "overmind",
+        "dotnet", "gradle", "mvn",
     ]
     private static let jsRunnerScripts: Set<String> = [
         "npm", "npm-cli", "npx", "npx-cli", "pnpm", "pnpx", "yarn", "nodemon", "tsx", "ts-node-dev", "next",
@@ -295,6 +295,8 @@ public final class PortScanner: @unchecked Sendable {
                 let first = p.facts.argv.first?.split(separator: " ").first.map(String.init) ?? ""
                 return ["npm", "npx", "pnpm", "yarn", "next-server", "node"].contains(first)
             }
+            // `node --watch server.js` restarts its child on every change, so Stop must take the watcher too.
+            if Self.isWatchMode(p.facts.argv) { return true }
             for arg in p.facts.argv.dropFirst().prefix(3) {
                 let name = ((arg as NSString).lastPathComponent as NSString).deletingPathExtension.lowercased()
                 if Self.jsRunnerScripts.contains(name) { return true }
@@ -307,6 +309,17 @@ public final class PortScanner: @unchecked Sendable {
         if isPython(p) {
             guard isPython(child), !Classifier.runsInlinePython(p.facts.argv) else { return false }
             return Self.isPythonReloader(parent: p.facts.argv, child: child.facts.argv)
+        }
+        return false
+    }
+
+    /// True for `node --watch app.js`, `node --watch-path=src app.js` and `bun --watch run dev`. Only options
+    /// before the script count: in `node app.js --watch` the flag belongs to the script.
+    static func isWatchMode(_ argv: [String]) -> Bool {
+        for arg in argv.dropFirst() {
+            if arg == "--watch" || arg.hasPrefix("--watch=") || arg == "--watch-path" || arg.hasPrefix("--watch-path=") { return true }
+            if arg == "run" { continue }  // `bun run --watch dev`
+            if !arg.hasPrefix("-") { return false }
         }
         return false
     }
@@ -342,7 +355,7 @@ public final class PortScanner: @unchecked Sendable {
 
     private static let genericRuntimes: Set<String> = ["node", "bun", "deno", "python", "ruby", "php", "java", "dotnet"]
 
-    private func makeServer(_ unit: Unit) -> Server {
+    private func makeServer(_ unit: Unit, table: [pid_t: LibProc.ShortInfo]) -> Server {
         let sortedListeners = unit.listeners.sorted { $0.0.pid < $1.0.pid }
         let primary = sortedListeners[0].0
         let frameworks = sortedListeners.map { classify($0.0) }
@@ -350,8 +363,13 @@ public final class PortScanner: @unchecked Sendable {
         let framework = frameworks.first { $0.category != .other && !Self.genericRuntimes.contains($0.id) }
             ?? frameworks.first { $0.category != .other }
             ?? unit.framework
-        let launch = framework.category == .other ? nil : launchSpec(for: unit.chain)
-        let ports = orderedPorts(sortedListeners.flatMap(\.1), hints: unit.chain.flatMap(\.facts.argv))
+        // launchd brings back a database or service it manages (`brew services`) as soon as it stops, so starting
+        // another copy on Restart would collide with it on the same port and data folder.
+        let launchdManaged = unit.root.ppid == 1 && (framework.category == .database || framework.category == .service)
+        let launch = framework.category == .other || launchdManaged ? nil : launchSpec(for: unit.chain)
+        let ports = Self.orderedPorts(sortedListeners.flatMap(\.1), hints: unit.chain.flatMap(\.facts.argv),
+                                      preferred: framework.preferredPorts)
+        let launcher = framework.category == .other ? nil : launcher(above: unit.root, table: table)
         let projectDir = classifier.projectDirectory(primary.facts, framework: framework)
         let project = projectDir.map(resolveProject)
 
@@ -380,7 +398,8 @@ public final class PortScanner: @unchecked Sendable {
             executable: primary.facts.executable,
             command: command,
             directory: projectDir ?? primary.facts.cwd,
-            launch: launch
+            launch: launch,
+            launcher: launcher
         )
     }
 
@@ -430,9 +449,9 @@ public final class PortScanner: @unchecked Sendable {
         }
     }
 
-    /// One entry per port, the one named in argv first, then ascending.
+    /// One entry per port: the one named in argv first, then the framework's web UI ports in its order, then ascending.
     /// When a port is bound on several addresses, all interfaces wins, then localhost, so the URL reaches it.
-    func orderedPorts(_ bindings: [PortBinding], hints: [String]) -> [PortBinding] {
+    static func orderedPorts(_ bindings: [PortBinding], hints: [String], preferred: [UInt16] = []) -> [PortBinding] {
         func reach(_ binding: PortBinding) -> Int {
             binding.isWildcard ? (binding.acceptsIPv4 ? 4 : 3) : binding.isLocalhost ? 2 : binding.isLoopback ? 1 : 0
         }
@@ -451,10 +470,129 @@ public final class PortScanner: @unchecked Sendable {
                 break
             }
         }
-        return byPort.values.sorted { a, b in
-            if a.port == hinted { return true }
-            if b.port == hinted { return false }
-            return a.port < b.port
+        func rank(_ port: UInt16) -> (Int, Int, UInt16) {
+            (port == hinted ? 0 : 1, preferred.firstIndex(of: port) ?? preferred.count, port)
         }
+        return byPort.values.sorted { rank($0.port) < rank($1.port) }
+    }
+
+    func orderedPorts(_ bindings: [PortBinding], hints: [String], preferred: [UInt16] = []) -> [PortBinding] {
+        Self.orderedPorts(bindings, hints: hints, preferred: preferred)
+    }
+
+    // MARK: Launcher
+
+    /// One process above a launch unit, as `identifyLauncher` sees it.
+    public struct Ancestor: Sendable, Hashable {
+        public let pid: pid_t
+        public let executable: String
+        public let argv: [String]
+
+        public init(pid: pid_t, executable: String, argv: [String]) {
+            self.pid = pid
+            self.executable = executable
+            self.argv = argv
+        }
+    }
+
+    /// Up to this many processes above the unit are checked, not counting shells and `login`.
+    private static let launcherHops = 4
+
+    /// The processes above `root`, nearest first, ending at Vibe Kit, launchd or the hop limit.
+    private func launcher(above root: Inspected, table: [pid_t: LibProc.ShortInfo]) -> String? {
+        var ancestors: [Ancestor] = []
+        var pid = root.ppid
+        var hops = 0
+        // The table holds only this user's processes and leaves out Vibe Kit, so a root-owned `login` between a
+        // terminal and its shell is read directly.
+        while ancestors.count < 12 {
+            if pid <= 1 {
+                ancestors.append(Ancestor(pid: 1, executable: "/sbin/launchd", argv: ["launchd"]))
+                break
+            }
+            if pid == ownPid {
+                ancestors.append(Ancestor(pid: pid, executable: "", argv: []))
+                break
+            }
+            let next: pid_t
+            if let process = inspect(pid) {
+                ancestors.append(Ancestor(pid: pid, executable: process.facts.executable, argv: process.facts.argv))
+                next = process.ppid
+            } else if let info = table[pid] ?? LibProc.shortInfo(pid) {
+                ancestors.append(Ancestor(pid: pid, executable: LibProc.executablePath(pid) ?? info.comm, argv: [info.comm]))
+                next = info.ppid
+            } else {
+                break
+            }
+            if !Self.isPassThrough(ancestors[ancestors.count - 1]) {
+                hops += 1
+                if hops >= Self.launcherHops { break }
+            }
+            pid = next
+        }
+        return Self.identifyLauncher(ancestors: ancestors, ownPid: ownPid)
+    }
+
+    private static let passThroughNames: Set<String> = ["zsh", "bash", "sh", "fish", "dash", "login", "env", "sudo", "nohup"]
+
+    /// Shells and `login` sit between every terminal and the command typed into it, so they never name a launcher.
+    private static func isPassThrough(_ ancestor: Ancestor) -> Bool {
+        let name = ((ancestor.executable as NSString).lastPathComponent).lowercased()
+        let arg0 = ((ancestor.argv.first ?? "") as NSString).lastPathComponent.lowercased()
+        return passThroughNames.contains(name) || passThroughNames.contains(arg0.trimmingCharacters(in: CharacterSet(charactersIn: "-")))
+    }
+
+    /// Names the agent, editor or terminal behind a server from the processes above it, nearest first.
+    /// The nearest one that is recognised wins, so `claude` inside Ghostty is Claude Code. Shells are skipped.
+    /// launchd counts only when it started the server directly. Failing all of these, the nearest app bundle's name.
+    public static func identifyLauncher(ancestors: [Ancestor], ownPid: pid_t = getpid()) -> String? {
+        var fallback: String?
+        var sawProcess = false
+        for (index, ancestor) in ancestors.enumerated() where index < 12 {
+            if ancestor.pid == ownPid { return "Vibe Kit" }
+            if ancestor.pid == 1 { return sawProcess ? fallback : "launchd" }
+            if isPassThrough(ancestor) { continue }
+            if let name = knownLauncher(ancestor) { return name }
+            sawProcess = true
+            if fallback == nil { fallback = appBundleName(ancestor.executable) }
+        }
+        return fallback
+    }
+
+    private static func knownLauncher(_ ancestor: Ancestor) -> String? {
+        let path = ancestor.executable
+        let exe = (path as NSString).lastPathComponent.lowercased()
+        let arg0 = ((ancestor.argv.first ?? "") as NSString).lastPathComponent.lowercased()
+        // A node CLI such as Codex runs as `node …/bin/codex.js`; its script is the second argument.
+        let script = ancestor.argv.dropFirst().first(where: { !$0.hasPrefix("-") }) ?? ""
+        let scriptName = ((script as NSString).lastPathComponent as NSString).deletingPathExtension.lowercased()
+        let names: Set<String> = [exe, arg0, scriptName]
+
+        // The native installer links `claude` to a binary named after its version, such as `versions/2.1.3`.
+        if names.contains("claude") || path.contains("/claude/versions/") || path.contains("/@anthropic-ai/claude-code/")
+            || script.contains("/@anthropic-ai/claude-code/") { return "Claude Code" }
+        if names.contains("codex") || path.contains("/@openai/codex/") || script.contains("/@openai/codex/") { return "Codex" }
+        if path.contains("/Cursor.app/") || names.contains("cursor-agent") { return "Cursor" }
+        if path.contains("/Antigravity.app/") || names.contains("antigravity") { return "Antigravity" }
+        if path.contains("/Visual Studio Code.app/") || path.contains("/Visual Studio Code - Insiders.app/") { return "VS Code" }
+        if path.contains("/Zed.app/") || path.contains("/Zed Preview.app/") { return "Zed" }
+        if path.contains("/Ghostty.app/") || names.contains("ghostty") { return "Ghostty" }
+        if path.contains("/Warp.app/") || path.contains("/WarpPreview.app/") { return "Warp" }
+        if path.contains("/iTerm.app/") || path.contains("/iTerm2.app/") { return "iTerm" }
+        if path.contains("/Terminal.app/") { return "Terminal" }
+        if path.contains("/kitty.app/") || names.contains("kitty") { return "kitty" }
+        if path.contains("/WezTerm.app/") || names.contains("wezterm-gui") || names.contains("wezterm") { return "WezTerm" }
+        if path.contains("/Alacritty.app/") || names.contains("alacritty") { return "Alacritty" }
+        if names.contains("tmux") || arg0.hasPrefix("tmux") { return "tmux" }
+        return nil
+    }
+
+    /// The outermost app bundle's name, such as `T3 Code` for a helper inside it.
+    private static func appBundleName(_ path: String) -> String? {
+        guard let range = path.range(of: ".app/") else { return nil }
+        let bundle = path[..<range.lowerBound]
+        guard let slash = bundle.lastIndex(of: "/") else { return nil }
+        let name = String(bundle[bundle.index(after: slash)...])
+        return name.isEmpty ? nil : name
     }
 }
