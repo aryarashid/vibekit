@@ -1,0 +1,144 @@
+name: Release
+
+# Publishes a signed, notarized release with a Sparkle update when the VERSION file names a
+# version that has no release yet. See docs/RELEASING.md.
+#
+# - Push to main: releases if VERSION was bumped. Otherwise, or if the secrets aren't set up yet,
+#   it skips with a note in the job summary and stays green.
+# - Push a v* tag, or run it by hand: same, but missing secrets fail the run.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    # Docs-only commits never start it. Tag pushes ignore this list.
+    paths:
+      - VERSION
+      - Package.swift
+      - Package.resolved
+      - Sources/**
+      - Resources/**
+      - scripts/build-app.sh
+      - scripts/release.sh
+      - scripts/release-preflight.sh
+      - scripts/sparkle.sh
+      - scripts/make-appcast.py
+      - scripts/make-icon.swift
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      DEVELOPER_ID_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+      DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+      NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+      NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+      NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER_ID }}
+      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The build number is the commit count.
+          fetch-depth: 0
+
+      - name: Decide
+        id: preflight
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: scripts/release-preflight.sh
+
+      - name: Test
+        if: steps.preflight.outputs.publish == 'true'
+        run: swift test
+
+      - name: Import the Developer ID certificate
+        if: steps.preflight.outputs.publish == 'true'
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/release.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          printf '%s' "$DEVELOPER_ID_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$KEYCHAIN" -P "$DEVELOPER_ID_P12_PASSWORD" -f pkcs12 -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          read -ra EXISTING <<< "$(security list-keychains -d user | tr -d '"' | xargs)"
+          security list-keychains -d user -s "$KEYCHAIN" "${EXISTING[@]}"
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk -F'"' '/Developer ID Application/ { print $2; exit }')"
+          [[ -n "$IDENTITY" ]] || { echo "::error::DEVELOPER_ID_P12_BASE64 has no Developer ID Application identity."; exit 1; }
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      - name: Write the notary key
+        if: steps.preflight.outputs.publish == 'true'
+        run: |
+          (umask 077 && printf '%s\n' "$NOTARY_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8")
+          echo "NOTARY_KEY=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+
+      - name: Release notes
+        if: steps.preflight.outputs.publish == 'true'
+        env:
+          TAG: ${{ steps.preflight.outputs.tag }}
+        run: |
+          mkdir -p build
+          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" --jq .body > build/release-notes.md
+          cat build/release-notes.md
+
+      - name: Build, sign, notarize and sign the update
+        if: steps.preflight.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.preflight.outputs.version }}
+          BUILD: ${{ steps.preflight.outputs.build }}
+          RELEASE_NOTES_FILE: build/release-notes.md
+        run: ./scripts/release.sh
+
+      - name: Publish
+        if: steps.preflight.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.preflight.outputs.version }}
+          TAG: ${{ steps.preflight.outputs.tag }}
+        run: |
+          # A draft first, so releases/latest never points at a release without its appcast.
+          gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "Vibe Kit $VERSION" \
+            --notes-file build/release-notes.md \
+            build/Vibe-Kit.dmg "build/Vibe-Kit-$VERSION.zip" build/appcast.xml
+          gh release edit "$TAG" --draft=false --latest
+          {
+            echo "### Released Vibe Kit $VERSION"
+            echo ""
+            echo "https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check the live appcast
+        if: steps.preflight.outputs.publish == 'true'
+        env:
+          BUILD: ${{ steps.preflight.outputs.build }}
+        run: |
+          for _ in 1 2 3 4 5 6; do
+            if curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/appcast.xml" | grep -q "<sparkle:version>$BUILD</sparkle:version>"; then
+              echo "The latest appcast offers build $BUILD."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::releases/latest/download/appcast.xml does not offer build $BUILD."
+          exit 1
+
+      - name: Clean up
+        if: always()
+        run: |
+          [[ -n "${KEYCHAIN:-}" ]] && security delete-keychain "$KEYCHAIN" || true
+          rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/certificate.p12"

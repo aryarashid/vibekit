@@ -15,6 +15,7 @@ pkill -x VibeKit >/dev/null 2>&1 || true
 sleep 0.5
 
 rm -rf "$DEST/Vibe Kit.app"
-cp -R "build/Vibe Kit.app" "$DEST/"
+# ditto keeps the symlinks inside Sparkle.framework intact.
+ditto "build/Vibe Kit.app" "$DEST/Vibe Kit.app"
 open "$DEST/Vibe Kit.app"
 echo "Installed $DEST/Vibe Kit.app. Look for the V in your menu bar, or press Control-Option-Command-V."
