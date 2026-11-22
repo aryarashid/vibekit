@@ -252,19 +252,7 @@ struct SettingsPage: View {
     }
 
     private func toggle(_ title: String, keys: String? = nil, isOn: Binding<Bool>) -> some View {
-        // Switches line up in one column on the right, like System Settings.
-        HStack {
-            Text(title).font(.system(size: 12.5))
-                .accessibilityHidden(true)
-            Spacer(minLength: 8)
-            if let keys { KeyCap(keys).accessibilityHidden(true) }
-            Toggle(title, isOn: isOn)
-                .labelsHidden()
-                .toggleStyle(PanelSwitch())
-                .accessibilityLabel([title, keys].compactMap { $0 }.joined(separator: ", "))
-        }
-        .padding(.horizontal, 10)
-        .frame(minHeight: 31)
+        SettingsToggleRow(title: title, keys: keys, isOn: isOn)
     }
 
     private func picker(_ title: String, selection: Binding<String?>, apps: [ExternalApp]) -> some View {
@@ -300,5 +288,30 @@ struct SettingsPage: View {
         .padding(.horizontal, 10)
         .frame(minHeight: 25)
         .accessibilityElement(children: .combine)
+    }
+}
+
+private struct SettingsToggleRow: View {
+    let title: String
+    let keys: String?
+    @Binding var isOn: Bool
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        // Switches line up in one column on the right, like System Settings.
+        HStack {
+            Text(title)
+                .font(.system(size: 12.5))
+                .foregroundStyle(isEnabled ? .primary : .secondary)
+                .accessibilityHidden(true)
+            Spacer(minLength: 8)
+            if let keys { KeyCap(keys).accessibilityHidden(true) }
+            Toggle(title, isOn: $isOn)
+                .labelsHidden()
+                .toggleStyle(PanelSwitch())
+                .accessibilityLabel([title, keys].compactMap { $0 }.joined(separator: ", "))
+        }
+        .padding(.horizontal, 10)
+        .frame(minHeight: 31)
     }
 }

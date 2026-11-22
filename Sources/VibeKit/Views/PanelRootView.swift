@@ -215,7 +215,7 @@ struct ServerListPage: View {
                 .onKeyPress(.upArrow) { move(-1, in: items); return .handled }
                 .onKeyPress(.return) { activate(items); return .handled }
                 .onKeyPress(.rightArrow) {
-                    guard query.isEmpty, let id = selection, !id.hasPrefix("recent:") else { return .ignored }
+                    guard query.isEmpty, let id = activeID(in: items), !id.hasPrefix("recent:") else { return .ignored }
                     hoverLock = NSEvent.mouseLocation
                     toggleDetails(id)
                     return .handled

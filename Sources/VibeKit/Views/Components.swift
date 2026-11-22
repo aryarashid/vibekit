@@ -251,20 +251,26 @@ struct BrandMark: View {
 /// app, which is always: the panel takes the keyboard without activating Vibe Kit. Gray made on and off hard to tell apart.
 struct PanelSwitch: ToggleStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         let on = configuration.isOn
+        let track: AnyShapeStyle = if on {
+            AnyShapeStyle(Color.accentColor.opacity(isEnabled ? 1 : 0.45))
+        } else {
+            AnyShapeStyle(Color.primary.opacity(isEnabled ? 0.14 : 0.10))
+        }
         Button {
             withAnimation(reduceMotion ? nil : .snappy(duration: 0.18)) { configuration.isOn.toggle() }
         } label: {
             Capsule()
-                .fill(on ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(Color.primary.opacity(0.14)))
-                .overlay(Capsule().strokeBorder(Color.primary.opacity(on ? 0 : 0.06), lineWidth: 0.5))
+                .fill(track)
+                .overlay(Capsule().strokeBorder(Color.primary.opacity(on ? 0 : (isEnabled ? 0.06 : 0.09)), lineWidth: 0.5))
                 .frame(width: 30, height: 17)
                 .overlay(alignment: on ? .trailing : .leading) {
                     Circle()
-                        .fill(.white)
-                        .shadow(color: .black.opacity(0.22), radius: 0.8, y: 0.5)
+                        .fill(Color.white.opacity(isEnabled ? 1 : 0.78))
+                        .shadow(color: .black.opacity(isEnabled ? 0.22 : 0.14), radius: 0.8, y: 0.5)
                         .frame(width: 13, height: 13)
                         .padding(2)
                 }
