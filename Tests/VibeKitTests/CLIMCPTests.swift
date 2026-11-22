@@ -221,6 +221,45 @@ final class CLIMCPTests: XCTestCase {
         let listed = try await rpc(mcp, "tools/call", params: ["name": "list_prompts", "arguments": ["query": "debug"]])
         let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(content(listed).utf8)) as? [Object])
         XCTAssertEqual(rows.first?["text"] as? String, "Check {{url}} on {{branch}} ({{project}}:{{port}}) clip={{clipboard}} {{unknown}}")
+
+        // Raw Docker/OrbStack runtime rows (before container resolution or on socket timeout) are also protected.
+        let rawRuntime = Server(id: "orb-900", pid: 900, rootPid: 900, listenerPids: [900],
+                                startDate: Date(timeIntervalSince1970: 0),
+                                ports: [PortBinding(port: 5432, address: "0.0.0.0", isIPv6: false)],
+                                framework: .orbstack, project: nil, processName: "OrbStack Helper",
+                                executable: "/Applications/OrbStack.app/Contents/MacOS/OrbStack Helper",
+                                command: "OrbStack Helper", directory: nil, launch: nil)
+        let rawService = ListCommand(support: dir, scan: { _, _ in [rawRuntime] })
+        do {
+            _ = try await rawService.run(.stop("5432"), format: .text)
+            XCTFail("Expected stopping a container runtime row to fail")
+        } catch let error as CLIError {
+            XCTAssertTrue(error.localizedDescription.contains("container runtime"))
+        }
+
+        // MCP probe_server refuses remote hosts before connecting.
+        for remote in ["example.com", "127.evil.com", "169.254.169.254"] {
+            let reply = try await rpc(mcp, "tools/call", params: ["name": "probe_server", "arguments": ["port": 80, "host": remote]])
+            XCTAssertEqual((reply["error"] as? Object)?["code"] as? Int, -32602, remote)
+        }
+
+        // Shared IPv4/IPv6 port emits explicit loopback URLs in JSON list and prompt expansion.
+        let v4 = Server(id: "100-0", pid: 100, rootPid: 100, listenerPids: [100],
+                        startDate: Date(timeIntervalSince1970: 10),
+                        ports: [PortBinding(port: 3000, address: "127.0.0.1", isIPv6: false)],
+                        framework: .vite, project: Project(name: "V4", root: "/tmp/v4", subpath: nil, branch: "main", worktree: nil),
+                        processName: "node", executable: "/bin/node", command: "vite", directory: "/tmp/v4", launch: nil)
+        let v6 = Server(id: "200-0", pid: 200, rootPid: 200, listenerPids: [200],
+                        startDate: Date(timeIntervalSince1970: 20),
+                        ports: [PortBinding(port: 3000, address: "::1", isIPv6: true)],
+                        framework: .vite, project: Project(name: "V6", root: "/tmp/v6", subpath: nil, branch: "feat", worktree: nil),
+                        processName: "node", executable: "/bin/node", command: "vite", directory: "/tmp/v6", launch: nil)
+        let sharedService = ListCommand(support: dir, scan: { _, _ in [v4, v6] }, clipboard: { "clip" })
+        let listedJSON = try await sharedService.run(.list(all: false, cpu: false), format: .json)
+        let listRows = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(listedJSON.text.utf8)) as? [Object])
+        XCTAssertEqual(listRows.compactMap { $0["url"] as? String }, ["http://127.0.0.1:3000", "http://[::1]:3000"])
+        let sharedExpanded = try await sharedService.run(.prompts("debug"), format: .text)
+        XCTAssertEqual(sharedExpanded.text, "Check http://[::1]:3000 on feat (V6:3000) clip=clip {{unknown}}")
     }
 }
 

@@ -40,7 +40,8 @@ struct ListCommand {
             if format == .text { return CommandOutput(text: Self.table(servers, cpu: cpu)) }
             let managed = try ManagedRegistry(directory: support).load()
             let host = Network.lanAddress()
-            return try .json(servers.map { Self.record($0, host: host, log: managed[$0.id]?.log, cpu: cpu) })
+            let shared = Server.sharedPorts(in: servers)
+            return try .json(servers.map { Self.record($0, host: host, log: managed[$0.id]?.log, cpu: cpu, sharedPorts: shared) })
         case .port(let port, let next):
             if next {
                 let found = try nextPort(from: port)
@@ -49,9 +50,15 @@ struct ListCommand {
             let free = isFree(port)
             var record: [String: Any] = ["port": port, "free": free]
             var message = "Port \(port) is " + (free ? "free." : "taken.")
-            if !free, let owner = scan(true, false).first(where: { $0.ports.contains { $0.port == port } }) {
-                message += " " + Self.label(owner)
-                record["owner"] = Self.record(owner, host: Network.lanAddress(), log: try ManagedRegistry(directory: support).load()[owner.id]?.log, cpu: false)
+            if !free {
+                let allServers = scan(true, false)
+                if let owner = allServers.first(where: { $0.ports.contains { $0.port == port } }) {
+                    let shared = Server.sharedPorts(in: allServers)
+                    message += " " + Self.label(owner)
+                    record["owner"] = Self.record(owner, host: Network.lanAddress(),
+                                                  log: try ManagedRegistry(directory: support).load()[owner.id]?.log,
+                                                  cpu: false, sharedPorts: shared)
+                }
             }
             return format == .text ? CommandOutput(text: message + "\n", exitCode: free ? 0 : 1)
                 : try .json(record, exitCode: free ? 0 : 1)
@@ -74,12 +81,14 @@ struct ListCommand {
         case .logs(let target, let tail):
             return CommandOutput(text: try logTail(target: target, lines: tail))
         case .probe(let port, let host):
+            guard Probe.isLocal(host) else { throw CLIError("Host must be local.", code: 2) }
             guard let page = await Probe.page(host: host, port: port) else { throw CLIError("No HTTP response from \(host) on port \(port).") }
             return try .json(["status": page.status, "title": page.title as Any, "isSecure": page.isSecure])
         case .stop(let target), .restart(let target):
             let server = try Self.resolve(target, servers: scan(true, false))
-            if let container = server.containerName {
-                throw CLIError("\(server.title) runs inside container '\(container)'. Stop or restart it with docker or orb instead.")
+            if server.isContainerControlled {
+                let detail = server.containerName.map { "runs inside container '\($0)'" } ?? "is a container runtime"
+                throw CLIError("\(server.title) \(detail). Stop or restart containers with docker or orb instead.")
             }
             let restart = action == .restart(target)
             if restart && server.launch == nil { throw CLIError("No launch command for \(server.title).") }
@@ -100,11 +109,16 @@ struct ListCommand {
         let tokens = Set(PromptVariables.tokens(in: text))
         guard !tokens.isEmpty else { return text }
         let needsServer = !tokens.isDisjoint(with: ["url", "port", "branch", "project"])
-        let dev = needsServer ? scan(false, false).filter { $0.category == .dev }.max(by: { $0.startDate < $1.startDate }) : nil
+        let allServers = needsServer ? scan(true, false) : []
+        let shared = Server.sharedPorts(in: allServers)
+        let dev = allServers.filter { $0.category == .dev }.max(by: { $0.startDate < $1.startDate })
+        let url = dev.flatMap { server in
+            server.ports.first.flatMap { server.localURL(for: $0, explicitLoopback: shared.contains($0.port)) } ?? server.localURL
+        }
         let clip = tokens.contains("clipboard") ? clipboard().flatMap { $0.isEmpty ? nil : $0 } : nil
         let context = PromptContext(
             clipboard: clip,
-            url: dev?.localURL?.absoluteString,
+            url: url?.absoluteString,
             port: dev.map { String($0.primaryPort) },
             branch: dev?.project?.branch,
             project: dev?.project?.name ?? dev?.title
@@ -112,11 +126,13 @@ struct ListCommand {
         return PromptVariables.expand(text, context: context)
     }
 
-    static func record(_ server: Server, host: String?, log: URL?, cpu: Bool) -> [String: Any] {
-        ["id": server.id, "primaryPort": server.primaryPort,
+    static func record(_ server: Server, host: String?, log: URL?, cpu: Bool, sharedPorts: Set<UInt16> = []) -> [String: Any] {
+        let localURL = server.ports.first.flatMap { server.localURL(for: $0, explicitLoopback: sharedPorts.contains($0.port)) }
+            ?? server.localURL
+        return ["id": server.id, "primaryPort": server.primaryPort,
          "ports": server.ports.map { ["port": $0.port, "address": $0.address, "isIPv6": $0.isIPv6, "acceptsIPv4": $0.acceptsIPv4] as [String: Any] },
          "title": server.title, "framework": server.framework.name, "category": server.category.rawValue,
-         "url": server.localURL?.absoluteString as Any, "networkURL": server.networkURL(host: host)?.absoluteString as Any,
+         "url": localURL?.absoluteString as Any, "networkURL": server.networkURL(host: host)?.absoluteString as Any,
          "branch": server.project?.branch as Any, "subpath": server.project?.subpath as Any,
          "worktree": server.project?.worktree as Any, "projectRoot": server.project?.root as Any,
          "directory": server.directory as Any, "pid": server.pid, "rootPid": server.rootPid, "command": server.command,

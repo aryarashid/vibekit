@@ -520,7 +520,7 @@ struct ServerListPage: View {
             // While you type, ⌘⌫ deletes to the start of the line, as in any text field. It stops only a row you
             // picked, never the fallback, so pressing it once more after the search clears stops nothing.
             Button("") {
-                if query.isEmpty, let picked = shortcutServer(explicitSelection: true), picked.containerName == nil {
+                if query.isEmpty, let picked = shortcutServer(explicitSelection: true), !picked.isContainerControlled {
                     store.stop(picked)
                 }
             }.keyboardShortcut(.delete, modifiers: .command)

@@ -347,6 +347,8 @@ public struct LidSleepEngine: Sendable {
     public static func secondsUntilNextTick(after status: LidSleepStatus, state: State) -> Int? {
         switch status.state {
         case .off:
+            // If clearing `disablesleep` failed, keep retrying until it is confirmed off.
+            if state.flag != false { return 10 }
             return status.enabled ? heartbeat : nil
         case .counting:
             // 0 left means the sleep request failed, so try again soon.
@@ -356,7 +358,9 @@ public struct LidSleepEngine: Sendable {
             return state.slept ? heartbeat : retryPoll
         case .lowBattery:
             return state.closedAt == nil ? heartbeat : 10
-        case .armed, .docked, .appMissing:
+        case .appMissing:
+            return state.flag != false ? 10 : heartbeat
+        case .armed, .docked:
             return heartbeat
         }
     }

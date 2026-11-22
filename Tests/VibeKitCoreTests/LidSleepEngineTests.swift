@@ -175,4 +175,18 @@ final class LidSleepEngineTests: XCTestCase {
         XCTAssertNil(LidSleepStatus(enabled: true, minutes: 45, state: .armed, updatedAt: 1).remaining(at: 5))
         XCTAssertEqual(status.remaining(at: 900), 90, "A clock behind the helper's does not add time")
     }
+
+    func testSwitchingOffRetriesIfClearingFlagFails() {
+        _ = tick(minutes: 45)
+        XCTAssertEqual(engine.state.flag, true)
+        failing = ["disablesleep"]
+        let off = tick(minutes: 0)
+        XCTAssertEqual(off.state, .off)
+        XCTAssertEqual(engine.state.flag, true)
+        XCTAssertEqual(LidSleepEngine.secondsUntilNextTick(after: off, state: engine.state), 10)
+        failing = []
+        let cleared = tick(minutes: 0)
+        XCTAssertEqual(engine.state.flag, false)
+        XCTAssertNil(LidSleepEngine.secondsUntilNextTick(after: cleared, state: engine.state))
+    }
 }

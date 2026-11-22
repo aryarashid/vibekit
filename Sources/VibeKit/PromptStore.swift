@@ -26,6 +26,8 @@ final class PromptStore {
     @ObservationIgnored private var unreadable = false
     /// Clipboard contents captured right before copying a prompt for paste, so they can be restored after ⌘V.
     @ObservationIgnored private var pendingClipboardRestore: ClipboardSnapshot?
+    /// Tracks the original user clipboard across overlapping quick pastes while Vibe Kit still owns the pasteboard.
+    @ObservationIgnored private var activeClipboardRestore: ClipboardSnapshot?
 
     static let defaultFile = ServerStore.supportDirectory.appendingPathComponent("prompts.json")
 
@@ -126,10 +128,25 @@ final class PromptStore {
     }
 
     /// Snapshots the clipboard (when `restore` is true) and writes `text` ready to paste into the front app.
+    /// Overlapping quick pastes carry the user's original clipboard forward while Vibe Kit still owns it.
     func copyForPaste(_ text: String, restore: Bool, pasteboard: NSPasteboard = .general) {
-        let saved = restore ? ClipboardSnapshot.capture(from: pasteboard) : nil
+        guard restore else {
+            pendingClipboardRestore = nil
+            activeClipboardRestore = nil
+            _ = copyToClipboard(text, pasteboard: pasteboard)
+            return
+        }
+        let savedItems: [NSPasteboardItem]
+        if let existing = pendingClipboardRestore ?? activeClipboardRestore,
+           pasteboard.changeCount == existing.expectedChangeCount {
+            savedItems = existing.items
+        } else {
+            savedItems = ClipboardSnapshot.capture(from: pasteboard)
+        }
         let changeCount = copyToClipboard(text, pasteboard: pasteboard)
-        pendingClipboardRestore = saved.map { ClipboardSnapshot(items: $0, expectedChangeCount: changeCount) }
+        let snapshot = ClipboardSnapshot(items: savedItems, expectedChangeCount: changeCount)
+        pendingClipboardRestore = snapshot
+        activeClipboardRestore = snapshot
     }
 
     func takePendingClipboardRestore() -> ClipboardSnapshot? {
@@ -139,6 +156,16 @@ final class PromptStore {
 
     func clearPendingClipboardRestore() {
         pendingClipboardRestore = nil
+        activeClipboardRestore = nil
+    }
+
+    @discardableResult
+    func finishClipboardRestore(_ snapshot: ClipboardSnapshot, pasteboard: NSPasteboard = .general) -> Bool {
+        let restored = snapshot.restore(to: pasteboard)
+        if activeClipboardRestore?.expectedChangeCount == snapshot.expectedChangeCount {
+            activeClipboardRestore = nil
+        }
+        return restored
     }
 
     /// Counts one use of `id` and saves.

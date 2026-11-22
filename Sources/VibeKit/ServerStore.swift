@@ -141,6 +141,7 @@ final class ServerStore {
     @ObservationIgnored private var timer: DispatchSourceTimer?
     @ObservationIgnored private(set) var isDemo = false
     @ObservationIgnored private var probing = Set<String>()
+    @ObservationIgnored private var probeTokens: [String: UInt64] = [:]
     @ObservationIgnored private var staleProbes = Set<String>()
     @ObservationIgnored private var probeAttempts: [String: Int] = [:]
     @ObservationIgnored private var retryAt: [String: Date] = [:]
@@ -178,8 +179,10 @@ final class ServerStore {
         self.persistenceDirectory = persistenceDirectory
         self.logsDirectory = logsDirectory
         recents = Self.load([RecentServer].self, from: persistenceDirectory.appendingPathComponent("recents.json")) ?? []
+        let cutoff = Date().addingTimeInterval(-86_400)
         managed = (Self.load([String: ManagedProcess].self, from: persistenceDirectory.appendingPathComponent("managed.json")) ?? [:]).filter { _, process in
-            LibProc.startDate(process.pid).map { abs($0.timeIntervalSince(process.started)) < 1 } ?? false
+            (process.owner != nil && process.started > cutoff && FileManager.default.fileExists(atPath: process.log.path))
+                || (LibProc.startDate(process.pid).map { abs($0.timeIntervalSince(process.started)) < 1 } ?? false)
         }
     }
 
@@ -305,26 +308,26 @@ final class ServerStore {
         if pages.keys.contains(where: { !ids.contains($0) }) { pages = pages.filter { ids.contains($0.key) } }
         if unanswered.contains(where: { !ids.contains($0) }) { unanswered = unanswered.filter { ids.contains($0) } }
         probeAttempts = probeAttempts.filter { ids.contains($0.key) }
+        probeTokens = probeTokens.filter { ids.contains($0.key) }
         retryAt = retryAt.filter { ids.contains($0.key) }
         probedAt = probedAt.filter { ids.contains($0.key) }
 
         // Ports where `localhost` could reach more than one server. Other listeners count: AirPlay holds 5000 and 7000.
-        var owners: [UInt16: Set<String>] = [:]
-        for server in sorted {
-            for binding in server.ports where binding.isWildcard || binding.isLocalhost {
-                owners[binding.port, default: []].insert(server.id)
-            }
-        }
-        let shared = Set(owners.filter { $0.value.count > 1 }.keys)
+        let shared = Server.sharedPorts(in: sorted)
         if shared != sharedPorts { sharedPorts = shared }
         for (pid, fd) in stdinWriters where !sorted.contains(where: { $0.rootPid == pid }) && !ProcessControl.isAlive(pid) {
             close(fd)
             stdinWriters[pid] = nil
         }
         // Drop finished managed entries now that `remember` has copied any log onto Recently Stopped.
+        // Keep headless CLI entries (which have `owner != nil`) for 24h while their log exists so
+        // `vibekit logs` can still read a server that crashed before a GUI scan saw it listening.
+        let headlessCutoff = Date().addingTimeInterval(-86_400)
         let liveManaged = managed.filter { key, process in
-            ids.contains(key) || (ProcessControl.isAlive(process.pid)
-                && LibProc.startDate(process.pid).map { abs($0.timeIntervalSince(process.started)) < 1 } == true)
+            ids.contains(key)
+                || (process.owner != nil && process.started > headlessCutoff && FileManager.default.fileExists(atPath: process.log.path))
+                || (ProcessControl.isAlive(process.pid)
+                    && LibProc.startDate(process.pid).map { abs($0.timeIntervalSince(process.started)) < 1 } == true)
         }
         if liveManaged.count != managed.count {
             let stale = managed.filter { liveManaged[$0.key] == nil }
@@ -359,16 +362,21 @@ final class ServerStore {
         }
     }
 
-    private func probe(_ server: Server) {
+    private func probe(_ server: Server, manual: Bool = false) {
         guard !isDemo, !probing.contains(server.id) else { return }
         probing.insert(server.id)
         let id = server.id
+        let key = server.httpCheckKey
+        let token = (probeTokens[id] ?? 0) &+ 1
+        probeTokens[id] = token
         let host = host(for: server)
         let port = server.primaryPort
         Task {
             let page = await Probe.page(host: host, port: port)
+            guard self.probeTokens[id] == token else { return }
             self.probing.remove(id)
             guard self.servers.contains(where: { $0.id == id }) else { return }
+            guard manual || !self.settings.skippedHTTPChecks.contains(key) else { return }
             self.probedAt[id] = Date()
             if let page {
                 if self.pages[id] != page { self.pages[id] = page }
@@ -390,11 +398,12 @@ final class ServerStore {
     /// Forces an immediate single HTTP status probe for `server`.
     func reprobe(_ server: Server) {
         guard server.framework.speaksHTTP else { return }
+        probing.remove(server.id)
         unanswered.remove(server.id)
         retryAt[server.id] = nil
         probeAttempts[server.id] = nil
         staleProbes.remove(server.id)
-        probe(server)
+        probe(server, manual: true)
     }
 
     /// Opts a server out of (or back into) HTTP status checks.
@@ -405,6 +414,8 @@ final class ServerStore {
             reprobe(server)
         } else {
             settings.skippedHTTPChecks.insert(key)
+            probeTokens[server.id] = (probeTokens[server.id] ?? 0) &+ 1
+            probing.remove(server.id)
             unanswered.remove(server.id)
             pages[server.id] = nil
             staleProbes.remove(server.id)
@@ -500,7 +511,7 @@ final class ServerStore {
     }
 
     func stop(_ server: Server) {
-        guard server.containerName == nil, pending[server.id] == nil else { return }
+        guard !server.isContainerControlled, pending[server.id] == nil else { return }
         pending[server.id] = .stopping
         schedule()
         Task {
@@ -516,7 +527,7 @@ final class ServerStore {
 
     /// Also cancels a restart in progress: the restart sees it is no longer pending and does not start it again.
     func forceQuit(_ server: Server) {
-        guard server.containerName == nil else { return }
+        guard !server.isContainerControlled else { return }
         pending[server.id] = .stopping
         schedule()
         ProcessControl.forceKill(root: server.rootPid, started: server.startDate)
@@ -536,7 +547,7 @@ final class ServerStore {
     }
 
     func restart(_ server: Server) {
-        guard server.containerName == nil, let launch = server.launch, pending[server.id] == nil else { return }
+        guard !server.isContainerControlled, let launch = server.launch, pending[server.id] == nil else { return }
         pending[server.id] = .restarting
         schedule()
         Task {
@@ -789,13 +800,7 @@ final class ServerStore {
         self.pages = pages
         self.history = history
         self.recents = recents
-        var owners: [UInt16: Set<String>] = [:]
-        for server in servers {
-            for binding in server.ports where binding.isWildcard || binding.isLocalhost {
-                owners[binding.port, default: []].insert(server.id)
-            }
-        }
-        sharedPorts = Set(owners.filter { $0.value.count > 1 }.keys)
+        sharedPorts = Server.sharedPorts(in: servers)
         lanAddress = "192.168.1.24"
         hasScanned = true
     }

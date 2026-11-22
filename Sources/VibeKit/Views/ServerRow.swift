@@ -219,10 +219,10 @@ struct ServerRow: View {
                         store.copyURL(server)
                     }
                 }
-                if server.launch != nil && server.containerName == nil {
+                if server.launch != nil && !server.isContainerControlled {
                     IconButton(symbol: "arrow.clockwise", help: "Restart") { store.restart(server) }
                 }
-                if server.containerName == nil {
+                if !server.isContainerControlled {
                     IconButton(symbol: "stop.fill", help: "Stop", role: .destructive) { store.stop(server) }
                 }
                 IconButton(symbol: "chevron.down", help: isExpanded ? "Hide details" : "Show details") { onToggleDetails() }
@@ -287,14 +287,14 @@ private struct ServerAccessibilityActions: ViewModifier {
     func body(content: Content) -> some View {
         content
             .accessibilityAction(named: isExpanded ? "Hide details" : "Show details", onToggleDetails)
-            .modifier(OptionalAction(enabled: server.containerName == nil, name: "Stop") {
+            .modifier(OptionalAction(enabled: !server.isContainerControlled, name: "Stop") {
                 store.stop(server)
             })
             .modifier(OptionalAction(enabled: server.localURL != nil,
                                      name: server.framework.urlScheme == nil ? "Copy URL" : "Copy connection URL") {
                 store.copyURL(server)
             })
-            .modifier(OptionalAction(enabled: server.launch != nil && server.containerName == nil, name: "Restart") {
+            .modifier(OptionalAction(enabled: server.launch != nil && !server.isContainerControlled, name: "Restart") {
                 store.restart(server)
             })
     }
@@ -373,14 +373,14 @@ struct ServerMenu: View {
         if store.logURL(for: server) != nil {
             Button("Show Logs") { onShowLogs(server) }
         }
-        if server.containerName == nil {
+        if !server.isContainerControlled {
             Divider()
             if server.launch != nil {
                 Button("Restart") { store.restart(server) }
             }
             Button("Stop") { store.stop(server) }
             if let shared = server.ports.first(where: { store.sharedPorts.contains($0.port) }) {
-                let others = store.otherServers(sharingPort: shared.port, with: server).filter { $0.containerName == nil }
+                let others = store.otherServers(sharingPort: shared.port, with: server).filter { !$0.isContainerControlled }
                 if !others.isEmpty {
                     Button("Stop Other on :\(shared.port)") {
                         for other in others { store.stop(other) }

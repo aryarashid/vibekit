@@ -135,6 +135,8 @@ public struct Server: Identifiable, Hashable, Sendable {
     /// Set for a published port of a Docker or OrbStack container. `pid` and `rootPid` then belong to the
     /// container runtime on this Mac, so stopping them would stop every container: the app must not offer Stop.
     public let containerName: String?
+    /// Host ports mapped to a container's web UI ports (such as RabbitMQ 15672 published as 25672).
+    public let webUIPorts: Set<UInt16>
     public var cpu: Double = 0
     public var memory: UInt64 = 0
     public var processCount: Int = 1
@@ -143,7 +145,7 @@ public struct Server: Identifiable, Hashable, Sendable {
         id: String, pid: pid_t, rootPid: pid_t, listenerPids: [pid_t], startDate: Date,
         ports: [PortBinding], framework: Framework, project: Project?, processName: String,
         executable: String, command: String, directory: String?, launch: LaunchSpec?,
-        launcher: String? = nil, containerName: String? = nil
+        launcher: String? = nil, containerName: String? = nil, webUIPorts: Set<UInt16> = []
     ) {
         self.id = id
         self.pid = pid
@@ -160,17 +162,36 @@ public struct Server: Identifiable, Hashable, Sendable {
         self.launch = launch
         self.launcher = launcher
         self.containerName = containerName
+        self.webUIPorts = webUIPorts
     }
 
     /// The same server with other ports, keeping its usage figures.
     public func replacingPorts(_ ports: [PortBinding]) -> Server {
         var copy = Server(id: id, pid: pid, rootPid: rootPid, listenerPids: listenerPids, startDate: startDate, ports: ports,
                           framework: framework, project: project, processName: processName, executable: executable,
-                          command: command, directory: directory, launch: launch, launcher: launcher, containerName: containerName)
+                          command: command, directory: directory, launch: launch, launcher: launcher,
+                          containerName: containerName, webUIPorts: webUIPorts)
         copy.cpu = cpu
         copy.memory = memory
         copy.processCount = processCount
         return copy
+    }
+
+    /// True for unpacked containers and raw Docker/OrbStack runtime listeners, where stopping or restarting
+    /// `rootPid` would take down every running container.
+    public var isContainerControlled: Bool {
+        containerName != nil || framework.id == Framework.docker.id || framework.id == Framework.orbstack.id
+    }
+
+    /// Ports where `localhost` could reach more than one server (for example IPv4 and IPv6 listeners on the same port).
+    public static func sharedPorts(in servers: [Server]) -> Set<UInt16> {
+        var owners: [UInt16: Set<String>] = [:]
+        for server in servers {
+            for binding in server.ports where binding.isWildcard || binding.isLocalhost {
+                owners[binding.port, default: []].insert(server.id)
+            }
+        }
+        return Set(owners.filter { $0.value.count > 1 }.keys)
     }
 
     public var category: ServerCategory { framework.category }
@@ -244,11 +265,15 @@ public struct Server: Identifiable, Hashable, Sendable {
         return localURL(for: primaryPort, secure: secure)
     }
 
-    /// Local URL for a specific port binding on this server. A port in `framework.preferredPorts` is a
-    /// web UI and gets `http://`, even on a tool whose other ports take a connection string, such as RabbitMQ's 15672.
+    private func isWebUIPort(_ port: UInt16) -> Bool {
+        containerName != nil ? webUIPorts.contains(port) : framework.preferredPorts.contains(port)
+    }
+
+    /// Local URL for a specific port binding on this server. A port in `framework.preferredPorts` (or its remapped
+    /// host port on a container) is a web UI and gets `http://`, even on a tool whose other ports take a connection string.
     public func localURL(for binding: PortBinding, secure: Bool = false, explicitLoopback: Bool = false) -> URL? {
         let host = host(for: binding, explicitLoopback: explicitLoopback)
-        let webUI = framework.preferredPorts.contains(binding.port)
+        let webUI = isWebUIPort(binding.port)
         if let scheme = framework.urlScheme, !webUI {
             return URL(string: "\(scheme)://\(host):\(binding.port)")
         }
@@ -256,13 +281,12 @@ public struct Server: Identifiable, Hashable, Sendable {
         return URL(string: "\(secure ? "https" : "http")://\(host):\(binding.port)")
     }
 
-    /// The URL for one of this server's ports, for a clickable pill per port. A port in `framework.preferredPorts` is a
-    /// web UI and gets `http://`, even on a tool whose other ports take a connection string, such as RabbitMQ's 15672.
+    /// The URL for one of this server's ports, for a clickable pill per port.
     public func localURL(for port: UInt16, secure: Bool = false, explicitLoopback: Bool = false) -> URL? {
         if let binding = ports.first(where: { $0.port == port }) {
             return localURL(for: binding, secure: secure, explicitLoopback: explicitLoopback)
         }
-        let webUI = framework.preferredPorts.contains(port)
+        let webUI = isWebUIPort(port)
         if let scheme = framework.urlScheme, !webUI {
             return URL(string: "\(scheme)://localhost:\(port)")
         }
@@ -271,7 +295,11 @@ public struct Server: Identifiable, Hashable, Sendable {
     }
 
     /// A dev server, admin UI or app page worth opening in a browser. Connection strings and plain listeners are not.
-    public var canOpenInBrowser: Bool { framework.speaksHTTP && framework.urlScheme == nil && category != .other }
+    public var canOpenInBrowser: Bool {
+        guard category != .other else { return false }
+        if isWebUIPort(primaryPort) { return true }
+        return framework.speaksHTTP && framework.urlScheme == nil
+    }
 
     /// Whether clicking this server opens a web browser (dev servers and HTTP services/databases without a custom scheme).
     public var opensInBrowser: Bool { canOpenInBrowser }

@@ -1,5 +1,6 @@
 import CoreFoundation
 import Foundation
+import VibeKitCore
 
 /// One request per line on stdio. Nothing creates a server or runs a tool during GUI startup.
 struct MCPServer {
@@ -161,10 +162,11 @@ struct MCPServer {
             case .probe:
                 var host = try string(.host, default: "localhost")
                 if host.contains(":"), !host.hasPrefix("[") { host = "[\(host)]" }
-                // Require a host, never URL credentials, paths or an embedded port.
+                // Require a local host, never remote destinations, URL credentials, paths or an embedded port.
                 guard let components = URLComponents(string: "http://\(host)"), components.host?.isEmpty == false,
                       components.port == nil, components.user == nil, components.password == nil,
                       components.path.isEmpty, components.query == nil, components.fragment == nil else { throw RPCError(-32602, "Invalid host") }
+                guard Probe.isLocal(host) else { throw RPCError(-32602, "Host must be local") }
                 return try .probe(port(), host: host)
             case .logs:
                 guard let lines = MCPServer.integer(args["tail_lines"] ?? 50), lines >= 0 else { throw RPCError(-32602, "Expected nonnegative tail_lines") }

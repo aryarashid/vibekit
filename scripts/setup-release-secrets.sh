@@ -104,6 +104,8 @@ case "${1:-}" in
       echo "Expected a 'Developer ID Application' certificate, got: $subject" >&2
       exit 1
     fi
+    cn="$(sed -n 's/.*CN=\([^,/]*\).*/\1/p' <<< "$subject" | head -1)"
+    [[ -n "$cn" ]] || cn="Developer ID Application"
 
     cert_mod="$("$OPENSSL" x509 -in "$pem" -noout -modulus | "$OPENSSL" sha256)"
     key_mod="$("$OPENSSL" rsa -in "$key" -noout -modulus 2>/dev/null | "$OPENSSL" sha256)"
@@ -115,7 +117,16 @@ case "${1:-}" in
     pass_file="$tmp/p12.pass"
     (umask 077 && "$OPENSSL" rand -base64 36 | tr -d '/+=\n' | head -c 32 > "$pass_file")
     p12="$tmp/DeveloperID.p12"
-    (umask 077 && "$OPENSSL" pkcs12 -export -inkey "$key" -in "$pem" -out "$p12" -passout "file:$pass_file")
+    pkcs12_args=(-export -inkey "$key" -in "$pem" -out "$p12" -passout "file:$pass_file")
+    if [[ "${SKIP_KEYCHAIN_IMPORT:-0}" != "1" ]]; then
+      ensure_g2_ca "$tmp"
+      g2_pem="$tmp/g2.pem"
+      if security find-certificate -c "Developer ID Certification Authority" -p "$HOME/Library/Keychains/login.keychain-db" > "$g2_pem" 2>/dev/null \
+        && [[ -s "$g2_pem" ]]; then
+        pkcs12_args+=(-certfile "$g2_pem")
+      fi
+    fi
+    (umask 077 && "$OPENSSL" pkcs12 "${pkcs12_args[@]}")
 
     # Verify macOS security(1) can import and pair the exported .p12 before uploading.
     verify_pass="$("$OPENSSL" rand -hex 16)"
@@ -123,13 +134,16 @@ case "${1:-}" in
     security create-keychain -p "$verify_pass" "$verify_kc"
     security unlock-keychain -p "$verify_pass" "$verify_kc"
     security import "$p12" -k "$verify_kc" -P "$p12_pass" -A >/dev/null
-    if ! security find-identity -p codesigning "$verify_kc" | grep -q "Developer ID Application"; then
-      echo "Exported .p12 failed macOS keychain verification." >&2
+    verify_flags=(-p codesigning)
+    if [[ "${ALLOW_UNTRUSTED_VERIFY:-0}" != "1" ]]; then
+      verify_flags=(-v -p codesigning)
+    fi
+    if ! security find-identity "${verify_flags[@]}" "$verify_kc" | grep -qF "$cn"; then
+      echo "Exported .p12 failed macOS keychain verification for '$cn'." >&2
       exit 1
     fi
 
     if [[ "${SKIP_KEYCHAIN_IMPORT:-0}" != "1" ]]; then
-      ensure_g2_ca "$tmp"
       security import "$p12" -k "$HOME/Library/Keychains/login.keychain-db" \
         -P "$p12_pass" -T /usr/bin/codesign -T /usr/bin/security >/dev/null
       echo "Imported Developer ID Application identity into login keychain."
@@ -140,8 +154,9 @@ case "${1:-}" in
       put DEVELOPER_ID_P12_PASSWORD < "$pass_file"
     fi
 
-    rm -rf "$CSR_DIR"
-    echo "Removed temporary private key folder $CSR_DIR."
+    rm -f "$key" "$CSR_DIR/VibeKit-DeveloperID.certSigningRequest"
+    rmdir "$CSR_DIR" 2>/dev/null || true
+    echo "Removed temporary private key and CSR."
     if [[ "${SKIP_KEYCHAIN_IMPORT:-0}" != "1" ]]; then
       security find-identity -v -p codesigning | grep "Developer ID Application" || true
     fi

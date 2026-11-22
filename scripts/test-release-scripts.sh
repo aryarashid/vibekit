@@ -112,16 +112,17 @@ else
   fails=$((fails + 1))
 fi
 
-# Accepts a matching DER Developer ID Application cert, verifies .p12 in macOS keychain, and removes key dir.
+# Accepts a matching DER Developer ID Application cert, verifies .p12 in macOS keychain, and removes only its own files.
+printf 'keep me\n' > "$csr_dir/unrelated.txt"
 printf 'basicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=codeSigning\n' > "$tmp/codesign.ext"
 /usr/bin/openssl req -new -key "$csr_dir/devid.key" \
   -subj "/CN=Developer ID Application: Test User (TEST123456)/OU=TEST123456" -out "$tmp/devid.csr" 2>/dev/null
 /usr/bin/openssl x509 -req -in "$tmp/devid.csr" -signkey "$csr_dir/devid.key" \
   -extfile "$tmp/codesign.ext" -days 1 -outform DER -out "$tmp/devid.cer" 2>/dev/null
-if VIBEKIT_CSR_DIR="$csr_dir" SKIP_KEYCHAIN_IMPORT=1 SKIP_GH_UPLOAD=1 \
+if VIBEKIT_CSR_DIR="$csr_dir" SKIP_KEYCHAIN_IMPORT=1 SKIP_GH_UPLOAD=1 ALLOW_UNTRUSTED_VERIFY=1 \
   scripts/setup-release-secrets.sh --install-cer "$tmp/devid.cer" >/dev/null \
-  && [[ ! -e "$csr_dir" ]]; then
-  echo "ok   --install-cer verifies .p12 and cleans up key"
+  && [[ ! -e "$csr_dir/devid.key" && ! -e "$csr_dir/VibeKit-DeveloperID.certSigningRequest" && -f "$csr_dir/unrelated.txt" ]]; then
+  echo "ok   --install-cer verifies .p12 and preserves unrelated files"
 else
   echo "FAIL --install-cer"
   fails=$((fails + 1))

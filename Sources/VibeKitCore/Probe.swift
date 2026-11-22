@@ -84,13 +84,19 @@ public enum Probe {
     }
 
     /// `ownAddresses` lists this Mac's interface addresses. Any other host, including other machines on the same
-    /// private network, is not local.
-    static func isLocal(_ host: String, ownAddresses: () -> [String] = Network.localAddresses) -> Bool {
+    /// private network or names starting with `127.`, is not local.
+    public static func isLocal(_ host: String, ownAddresses: () -> [String] = Network.localAddresses) -> Bool {
         let bare = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).lowercased()
-        if bare == "localhost" || bare.hasPrefix("127.") || bare == "::1" { return true }
-        // Only a literal IPv4 address can be one of ours. A name could resolve anywhere.
-        var parsed = in_addr()
-        guard inet_pton(AF_INET, bare, &parsed) == 1 else { return false }
+        if bare == "localhost" { return true }
+        var v6 = in6_addr()
+        if inet_pton(AF_INET6, bare, &v6) == 1 {
+            var loopback = in6addr_loopback
+            return memcmp(&v6, &loopback, MemoryLayout<in6_addr>.size) == 0
+        }
+        // Only a literal IPv4 address can be loopback or one of ours. A hostname could resolve anywhere.
+        var v4 = in_addr()
+        guard inet_pton(AF_INET, bare, &v4) == 1 else { return false }
+        if (UInt32(bigEndian: v4.s_addr) >> 24) == 127 { return true }
         return ownAddresses().contains(bare)
     }
 

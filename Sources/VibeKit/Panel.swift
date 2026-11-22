@@ -200,13 +200,13 @@ final class PanelController: NSObject, NSWindowDelegate {
                 try? await Task.sleep(for: .milliseconds(50))
                 // Opened again meanwhile: the keystroke would land in the panel, not the app the prompt was for.
                 guard let self, self.opens == open, !self.panel.isVisible else {
-                    restore?.restore()
+                    if let restore { self?.prompts.finishClipboardRestore(restore) }
                     return
                 }
                 PromptStore.pasteIntoFrontApp()
                 if let restore {
                     try? await Task.sleep(for: .milliseconds(250))
-                    restore.restore()
+                    self.prompts.finishClipboardRestore(restore)
                 }
             }
         }

@@ -194,6 +194,30 @@ struct ContainerResolverTests {
 
         #expect(ContainerResolver.parseResponse(Data("HTTP/1.0 500 Internal Server Error\r\n\r\n[]".utf8)) == nil)
         #expect(ContainerResolver.parseResponse(Data("garbage".utf8)) == nil)
+        // Malformed chunk sizes (negative hex, missing CRLF, truncated stream) must never crash.
+        #expect(ContainerResolver.parseResponse(Data("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n-1\r\n[]\r\n0\r\n\r\n".utf8)) == nil)
+        #expect(ContainerResolver.parseResponse(Data("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n[]XX0\r\n\r\n".utf8)) == nil)
+        #expect(ContainerResolver.parseResponse(Data("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n[]\r\n".utf8)) == nil)
+    }
+
+    @Test func remappedWebUIPortGetsHTTPAndCanOpenInBrowser() throws {
+        let rabbit = DockerContainer(
+            id: "cc11111111111111111111111111111111111111111111111111111111111111",
+            names: ["/queue"],
+            image: "rabbitmq:3-management",
+            ports: [
+                .init(ip: "0.0.0.0", privatePort: 5672, publicPort: 15672),
+                .init(ip: "0.0.0.0", privatePort: 15672, publicPort: 25672),
+            ]
+        )
+        let unpacked = try #require(ContainerResolver.unpack(containers: [rabbit], hostServer: runtime([15672, 25672])).first)
+        #expect(unpacked.framework == .rabbitmq)
+        #expect(unpacked.primaryPort == 25672)
+        #expect(unpacked.localURL?.absoluteString == "http://localhost:25672")
+        #expect(unpacked.localURL(for: 15672)?.absoluteString == "amqp://localhost:15672")
+        #expect(unpacked.canOpenInBrowser)
+        #expect(unpacked.isContainerControlled)
+        #expect(runtime([5432]).isContainerControlled)
     }
 
     @Test func talksToAUnixSocket() throws {

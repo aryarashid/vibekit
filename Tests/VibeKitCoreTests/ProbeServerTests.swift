@@ -64,4 +64,15 @@ struct ProbeServerTests {
         #expect(page?.title == "Secure App")
         #expect(page?.isSecure == true)
     }
+
+    @Test func isLocalRequiresParsedLoopbackOrOwnInterface() {
+        #expect(Probe.isLocal("localhost", ownAddresses: { [] }))
+        #expect(Probe.isLocal("127.0.0.1", ownAddresses: { [] }))
+        #expect(Probe.isLocal("127.0.0.2", ownAddresses: { [] }))
+        #expect(Probe.isLocal("[::1]", ownAddresses: { [] }))
+        #expect(Probe.isLocal("192.168.1.10", ownAddresses: { ["192.168.1.10"] }))
+        #expect(!Probe.isLocal("127.evil.com", ownAddresses: { [] }))
+        #expect(!Probe.isLocal("example.com", ownAddresses: { [] }))
+        #expect(!Probe.isLocal("169.254.169.254", ownAddresses: { [] }))
+    }
 }

@@ -149,7 +149,8 @@ public enum ContainerResolver {
                 directory: container.composeDirectory,
                 launch: nil,
                 launcher: hostServer.framework.name,
-                containerName: container.name
+                containerName: container.name,
+                webUIPorts: Set(preferred)
             )
             server.processCount = 0
             servers.append(server)
@@ -258,15 +259,18 @@ public enum ContainerResolver {
             guard let lineEnd = data.range(of: crlf, in: index..<data.endIndex) else { return nil }
             let sizeText = String(decoding: data[index..<lineEnd.lowerBound], as: UTF8.self)
                 .split(separator: ";").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
-            guard let size = Int(sizeText, radix: 16) else { return nil }
+            guard !sizeText.isEmpty, sizeText.allSatisfy(\.isHexDigit),
+                  let size = Int(sizeText, radix: 16), size >= 0 else { return nil }
             if size == 0 { return output }
             let start = lineEnd.upperBound
-            guard data.distance(from: start, to: data.endIndex) >= size else { return nil }
+            guard data.distance(from: start, to: data.endIndex) >= size + 2 else { return nil }
             let end = data.index(start, offsetBy: size)
+            let next = data.index(end, offsetBy: 2)
+            guard data[end..<next] == crlf else { return nil }
             output.append(data[start..<end])
-            index = data.index(end, offsetBy: 2, limitedBy: data.endIndex) ?? data.endIndex
+            index = next
         }
-        return output
+        return nil
     }
 
     /// One HTTP/1.0 GET over a Unix socket. HTTP/1.0 makes the server close the connection after the body.

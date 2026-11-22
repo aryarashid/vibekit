@@ -108,6 +108,11 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
           read -ra EXISTING <<< "$(security list-keychains -d user | tr -d '"' | xargs)"
           security list-keychains -d user -s "$KEYCHAIN" "${EXISTING[@]}"
+          if ! security find-identity -v -p codesigning "$KEYCHAIN" | grep -q "Developer ID Application"; then
+            curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$RUNNER_TEMP/DeveloperIDG2CA.cer"
+            security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$KEYCHAIN" >/dev/null 2>&1 || true
+            rm -f "$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          fi
           IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk -F'"' '/Developer ID Application/ { print $2; exit }')"
           [[ -n "$IDENTITY" ]] || { echo "::error::DEVELOPER_ID_P12_BASE64 has no Developer ID Application identity."; exit 1; }
           echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"

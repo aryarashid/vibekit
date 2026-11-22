@@ -77,11 +77,11 @@ struct ServerDetail: View {
                     HStack(spacing: 6) {
                         projectActions
                         Spacer(minLength: 6)
-                        if server.containerName == nil { forceQuit }
+                        if !server.isContainerControlled { forceQuit }
                     }
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 6) { projectActions }
-                        if server.containerName == nil { forceQuit }
+                        if !server.isContainerControlled { forceQuit }
                     }
                 }
                 .padding(.top, 4)
@@ -92,7 +92,7 @@ struct ServerDetail: View {
     }
 
     private var hasBottomActions: Bool {
-        server.containerName == nil
+        !server.isContainerControlled
             || (folder != nil && (editor != nil || terminal != nil))
             || store.logURL(for: server) != nil
     }
