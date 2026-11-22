@@ -17,13 +17,15 @@ enum LidSleep {
     static let configPath = configDirectory + "/lid-sleep-minutes"
     /// Root's file naming the app, so the helper goes idle if the app is moved to the Trash.
     static let appPathFile = configDirectory + "/app-path"
+    /// Where the helper keeps its timer across restarts.
+    static let statePath = "/var/run/dev.vibekit.lid-sleep.state"
 
     static let choices = [15, 30, 45, 60]
     static let defaultMinutes = 45
 
     /// SHA-256 of Resources/lid-sleep-helper.sh. The app bundle is writable by the user, so the
     /// installer only hands root a script with exactly this hash. A test keeps it in step.
-    static let helperSHA256 = "a14b75a7f78ec29fa3277e82fa97b2a54883d812df0fe84312ef0f3144662797"
+    static let helperSHA256 = "b6931061940cb052411cbf142b1ce84572c1521d347d8715401fd1d22922640b"
 
     /// The helper script inside the app bundle, or next to the sources for `swift run`.
     static var bundledHelper: URL? {
@@ -128,7 +130,7 @@ enum LidSleep {
             "set -e",
             "/bin/launchctl bootout system/\(label) 2>/dev/null || true",
             waitUntilUnloaded,
-            "/bin/rm -f \(shellQuote(plistPath)) \(shellQuote(helperPath)) \(shellQuote(configPath)) \(shellQuote(appPathFile))",
+            "/bin/rm -f \(shellQuote(plistPath)) \(shellQuote(helperPath)) \(shellQuote(configPath)) \(shellQuote(appPathFile)) \(shellQuote(statePath))",
             "/usr/bin/pmset -a disablesleep 0",
         ].joined(separator: "\n")
         return await runAsAdmin(command, prompt: "Vibe Kit wants to remove its lid sleep helper.")
