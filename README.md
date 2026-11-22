@@ -83,6 +83,17 @@ The panel's second tab keeps the prompts you send to coding agents again and aga
 - **Save from anywhere.** Select text in any app, then right-click and choose **Services → Add to Vibe Kit**. Or press **New**, or save what is on the clipboard.
 - **A file you own.** Prompts live in `~/Library/Application Support/VibeKit/prompts.json`, readable and sorted, so you can edit it by hand or keep it in your dotfiles. Changes made outside Vibe Kit show up the next time the panel opens.
 
+## Stay awake with the lid closed
+
+Agents and builds stop when a MacBook sleeps, and it sleeps the moment the lid closes. Turn on **Stay awake after closing the lid** in Settings and pick how long: 15, 30 or 45 minutes, or an hour. The screen goes dark as usual, work keeps running, and the Mac goes to sleep when the time is up.
+
+- **Safe in a bag.** Below 15% battery it sleeps at once. A wake later with the lid still closed does not start the timer again.
+- **Docked stays docked.** With an external display, the Mac works with the lid closed as before, and the timer never sends it to sleep.
+- **One password, once.** The first time you turn it on, Vibe Kit installs a small helper and asks for an administrator password. macOS only lets an administrator stop lid sleep. After that, switching it off and on or changing the time needs no password.
+- **How it works.** The helper is a short shell script that runs as a LaunchDaemon (`/Library/LaunchDaemons/dev.vibekit.lid-sleep.plist`). While the lid is open it sets `pmset disablesleep`, which has to be set before the lid closes. When the lid closes it counts down, then clears the setting and puts the Mac to sleep. While the feature is on, the Mac also won't sleep on its own with the lid open. If the helper stops for any reason, it clears the setting first, so it never leaves the Mac unable to sleep.
+
+To remove the helper, switch the setting off and press **Remove**. From a terminal, run `sudo launchctl bootout system/dev.vibekit.lid-sleep`, then delete `/Library/LaunchDaemons/dev.vibekit.lid-sleep.plist`, `/Library/PrivilegedHelperTools/dev.vibekit.lid-sleep` and `/Library/Application Support/Vibe Kit`, then run `sudo pmset -a disablesleep 0`.
+
 ## Install
 
 ### Download
