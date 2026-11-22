@@ -24,4 +24,5 @@ jobs:
       - name: Check the bundle
         run: |
           codesign --verify --deep --strict "build/Vibe Kit.app"
+          test -x "build/Vibe Kit.app/Contents/Helpers/VibeKitLidHelper"
           "build/Vibe Kit.app/Contents/MacOS/VibeKit" --list > /dev/null
