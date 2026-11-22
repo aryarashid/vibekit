@@ -265,13 +265,13 @@ private final class FakeEngine: @unchecked Sendable {
             raw.copyBytes(from: bytes)
             raw[bytes.count] = 0
         }
+        let sock = self.fd
         let bound = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(sock, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
-        try #require(bound == 0 && listen(fd, 1) == 0)
-        let fd = self.fd
+        try #require(bound == 0 && listen(sock, 1) == 0)
         Thread.detachNewThread { [self] in
-            let client = accept(fd, nil, nil)
+            let client = accept(sock, nil, nil)
             guard client >= 0 else { return }
             var buffer = [UInt8](repeating: 0, count: 4096)
             let n = buffer.withUnsafeMutableBytes { read(client, $0.baseAddress, $0.count) }
