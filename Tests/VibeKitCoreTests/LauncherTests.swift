@@ -87,6 +87,7 @@ struct LauncherTests {
         // Headless CLI restarts and orphaned shell children reparented to PID 1 are not launchd jobs.
         #expect(!PortScanner.isLaunchdManaged(ppid: 1, environment: ["VIBEKIT_MANAGED=1", "XPC_SERVICE_NAME=homebrew.mxcl.redis"]))
         #expect(!PortScanner.isLaunchdManaged(ppid: 1, environment: ["XPC_SERVICE_NAME=0", "PATH=/usr/bin"]))
+        #expect(!PortScanner.isLaunchdManaged(ppid: 1, environment: ["XPC_SERVICE_NAME=application.com.t3tools.t3code.13306541.13306552", "PATH=/usr/bin"]))
         #expect(!PortScanner.isLaunchdManaged(ppid: 1, environment: ["TERM_PROGRAM=ghostty", "PATH=/usr/bin"]))
     }
 }

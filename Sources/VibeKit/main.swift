@@ -41,6 +41,16 @@ do {
     case .bench(let seconds, let open): Bench.run(seconds: seconds, panelOpen: open)
     case .snapshot(let path): Snapshot.render(to: path)
     case .app:
+        // Running bare `vibekit` through a CLI symlink leaves Bundle.main pointing at the symlink folder,
+        // breaking Info.plist, Sparkle updates, and bundled helpers. Hand off to the real .app bundle instead.
+        if !Bundle.main.bundlePath.hasSuffix(".app"), let appURL = CLIArguments.enclosingAppBundleURL() {
+            let launcher = Process()
+            launcher.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            launcher.arguments = [appURL.path]
+            try launcher.run()
+            launcher.waitUntilExit()
+            exit(launcher.terminationStatus)
+        }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

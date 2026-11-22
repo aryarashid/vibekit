@@ -164,7 +164,7 @@ struct SettingsPage: View {
                 lidNotice("Paused. The helper is not running, or the copy of Vibe Kit it was set up for is gone. Switch this on to set it up again.", warning: true)
             } else if settings.lidHelperOutdatedActive {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    lidNotice("On, using the helper from an earlier version of Vibe Kit. Update to switch to the new native helper.", warning: true)
+                    lidNotice("On, using the helper from an earlier version of Vibe Kit.", warning: true)
                     Spacer(minLength: 0)
                     Button("Update") { Task { await settings.updateLidHelper() } }
                         .buttonStyle(.plain)

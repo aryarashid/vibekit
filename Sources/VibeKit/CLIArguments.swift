@@ -34,14 +34,39 @@ enum CLIArguments: Equatable {
       --help, -h, --version
     """
 
-    static var versionString: String {
-        if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String { return version }
+    static func enclosingAppBundleURL(executableURL: URL? = nil) -> URL? {
+        let raw = executableURL
+            ?? Bundle.main.executableURL
+            ?? URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
+        let resolved = raw.standardizedFileURL.resolvingSymlinksInPath()
+        let macOS = resolved.deletingLastPathComponent()
+        let contents = macOS.deletingLastPathComponent()
+        let app = contents.deletingLastPathComponent()
+        guard macOS.lastPathComponent == "MacOS",
+              contents.lastPathComponent == "Contents",
+              app.pathExtension == "app" else { return nil }
+        return app
+    }
+
+    static func versionString(executableURL: URL? = nil) -> String {
+        if executableURL == nil,
+           let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+            return version
+        }
+        // Invoking via ~/.local/bin/vibekit symlink points Bundle.main at the symlink directory;
+        // follow the symlink back to the enclosing .app bundle to read its Info.plist version.
+        if let app = enclosingAppBundleURL(executableURL: executableURL),
+           let version = Bundle(url: app)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+            return version
+        }
         // SwiftPM executables have no bundle Info.plist. Use the release file in this source checkout.
         let source = URL(fileURLWithPath: #filePath)
         let root = source.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         return (try? String(contentsOf: root.appendingPathComponent("VERSION"), encoding: .utf8))
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? "dev"
     }
+
+    static var versionString: String { versionString(executableURL: nil) }
 
     static func parse(_ arguments: [String]) throws -> Self {
         guard let command = arguments.first else { return .app }
