@@ -8,6 +8,7 @@ struct SettingsPage: View {
     let onHeightChange: (CGFloat) -> Void
 
     private var settings: Settings { store.settings }
+    private var updater: Updater { Updater.shared }
     @State private var pasteAccess = PromptStore.canPaste
 
     var body: some View {
@@ -78,6 +79,7 @@ struct SettingsPage: View {
                         picker("Editor", selection: $settings.editorID, apps: ExternalApp.editors)
                         picker("Terminal", selection: $settings.terminalID, apps: ExternalApp.terminals)
                     }
+                    group("Updates") { updateRows }
                     group("Keyboard shortcuts") {
                         shortcut("↑  ↓", "Move between servers")
                         shortcut("↩", "Open in browser, or start a stopped server")
@@ -170,6 +172,38 @@ struct SettingsPage: View {
         .font(Theme.metaFont)
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
+    }
+
+    @ViewBuilder private var updateRows: some View {
+        toggle("Check for updates automatically", isOn: Binding(
+            get: { updater.automaticallyChecksForUpdates },
+            set: { updater.setAutomaticallyChecksForUpdates($0) }))
+            .disabled(!updater.isAvailable)
+        toggle("Download and install automatically", isOn: Binding(
+            get: { updater.automaticallyDownloadsUpdates },
+            set: { updater.setAutomaticallyDownloadsUpdates($0) }))
+            .disabled(!updater.isAvailable || !updater.automaticallyChecksForUpdates)
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Version \(updater.versionDescription)").font(.system(size: 12.5))
+                Text(updateStatus)
+                    .font(Theme.metaFont)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button("Check Now") { updater.checkForUpdates() }
+                .controlSize(.small)
+                .disabled(!updater.canCheckForUpdates)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+    }
+
+    private var updateStatus: String {
+        if let note = updater.statusNote { return note }
+        guard let date = updater.lastUpdateCheckDate else { return "Not checked yet." }
+        return "Last checked \(date.formatted(.relative(presentation: .named)))."
     }
 
     private var removeButton: some View {

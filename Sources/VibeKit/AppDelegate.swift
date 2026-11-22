@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var panel = PanelController(store: store, prompts: prompts)
     private var statusItem: NSStatusItem!
     private let hotKey = HotKey()
+    private let updater = Updater.shared
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -41,6 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Services › Add to Vibe Kit, in the right-click menu of selected text in any app.
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
+        // Sparkle only runs in a signed, installed release; other builds stay quiet. See Updater.swift.
+        updater.willShowUpdateUI = { [weak self] in self?.panel.close() }
+        updater.start()
         // Load SwiftUI before the first click, once launch has settled.
         DispatchQueue.main.async { [weak self] in self?.panel.prewarm() }
     }
@@ -130,9 +134,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.close()
         settings.refreshLaunchAtLogin()
         let menu = NSMenu()
+        menu.autoenablesItems = false
         let open = NSMenuItem(title: "Open Vibe Kit", action: #selector(openPanel), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
+        let update = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        update.target = self
+        update.isEnabled = updater.canCheckForUpdates
+        if let note = updater.statusNote { update.toolTip = note }
+        menu.addItem(update)
         menu.addItem(.separator())
         let login = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         login.target = self
@@ -150,6 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openPanel() { panel.show(from: statusItem.button) }
+    @objc private func checkForUpdates() { updater.checkForUpdates() }
     @objc private func toggleLaunchAtLogin() { settings.setLaunchAtLogin(!settings.launchAtLogin) }
     @objc private func openLogs() {
         try? FileManager.default.createDirectory(at: ServerStore.logsDirectory, withIntermediateDirectories: true)
