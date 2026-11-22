@@ -236,6 +236,9 @@ struct PromptListPage: View {
                 } else {
                     summary
                     Spacer(minLength: 6)
+                    if store.settings.lidStayAwake || store.settings.lidHelperPaused {
+                        LidSleepIndicator(settings: store.settings) { route = .settings }
+                    }
                     if clipboardText != nil && !prompts.prompts.isEmpty {
                         IconButton(symbol: "doc.on.clipboard", help: "New prompt from the clipboard", size: 24) { addFromClipboard() }
                     }
@@ -273,16 +276,24 @@ struct PromptListPage: View {
 
     // MARK: Actions
 
+    private func expandedText(for prompt: Prompt) -> String {
+        let context = store.promptContext(clipboard: NSPasteboard.general.string(forType: .string))
+        return PromptVariables.expand(prompt.text, context: context)
+    }
+
     /// Copies, or pastes when that is on. The copy happens at once; the row flashes in place before the panel goes,
     /// so it does not jump mid-flash, and closing the panel meanwhile still records the use.
     private func use(_ prompt: Prompt?) {
         guard let prompt else { return }
-        prompts.copyToClipboard(prompt)
+        let expanded = expandedText(for: prompt)
         if store.settings.pasteOnUse && PromptStore.canPaste {
+            prompts.copyForPaste(expanded, restore: store.settings.restoreClipboardAfterPaste)
             prompts.recordUse(prompt.id)
             onUse(prompt)
             return
         }
+        prompts.clearPendingClipboardRestore()
+        prompts.copyToClipboard(expanded)
         if let previous = unrecordedUse, previous != prompt.id {
             prompts.recordUse(previous)
         }
@@ -301,7 +312,7 @@ struct PromptListPage: View {
     }
 
     private func copyOnly(_ prompt: Prompt) {
-        prompts.copy(prompt)
+        prompts.copy(prompt, expandedText: expandedText(for: prompt))
         store.show(Toast(message: "Copied “\(prompt.displayTitle)”"))
     }
 
@@ -547,6 +558,26 @@ struct PromptEditor: View {
                 .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.045)))
                 .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(focus == .text ? Theme.violet.opacity(0.78) : Color.primary.opacity(0.16),
                                   lineWidth: focus == .text ? 1.25 : 0.75))
+                let usedTokens = PromptVariables.tokens(in: text)
+                if !usedTokens.isEmpty {
+                    let names = usedTokens.map { "{{\($0)}}" }.joined(separator: ", ")
+                    HStack(spacing: 4) {
+                        Image(systemName: "curlybraces")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(Theme.violet)
+                        Text("Fills \(names) when used")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                } else {
+                    Text("Supports {{clipboard}}, {{url}}, {{port}}, {{branch}}, {{project}}")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Theme.readout)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
             .padding(14)
             Divider().opacity(0.6)

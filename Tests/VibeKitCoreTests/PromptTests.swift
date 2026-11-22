@@ -80,4 +80,66 @@ struct PromptTests {
         #expect(try FileManager.default.destinationOfSymbolicLink(atPath: link.path) == target.path)
         #expect(try PromptLibrary.load(from: target).map(\.text) == ["Body"])
     }
+
+    @Test func expandsKnownVariablesAndLeavesUnknownOrMissingUntouched() {
+        let context = PromptContext(
+            clipboard: "TypeError: undefined",
+            url: "http://localhost:3000",
+            port: "3000",
+            branch: "feat/checkout",
+            project: "storefront"
+        )
+        let template = "Fix {{project}} ({{branch}}) at {{url}} (port {{port}}):\n{{clipboard}}\nKeep {{unknown}} intact."
+        let expanded = PromptVariables.expand(template, context: context)
+        #expect(expanded == "Fix storefront (feat/checkout) at http://localhost:3000 (port 3000):\nTypeError: undefined\nKeep {{unknown}} intact.")
+    }
+
+    @Test func leavesMissingOrEmptyContextValuesUntouched() {
+        let context = PromptContext(clipboard: "", url: "http://localhost:5173", port: nil, branch: "", project: "web")
+        let template = "{{project}} on {{url}}:{{port}} ({{branch}}) — {{clipboard}}"
+        #expect(PromptVariables.expand(template, context: context) == "web on http://localhost:5173:{{port}} ({{branch}}) — {{clipboard}}")
+    }
+
+    @Test func doesNotDoubleExpandSubstitutedValuesAndHandlesMalformedBraces() {
+        let context = PromptContext(clipboard: "Check {{url}} and {{project}}", url: "http://localhost:3000", project: "app")
+        #expect(PromptVariables.expand("Paste: {{clipboard}}", context: context) == "Paste: Check {{url}} and {{project}}")
+        #expect(PromptVariables.expand("Nested {{{{url}}}} and unclosed {{port", context: context) == "Nested {{http://localhost:3000}} and unclosed {{port")
+    }
+
+    @Test func extractsUniqueKnownTokensInOrder() {
+        let tokens = PromptVariables.tokens(in: "In {{project}} ({{branch}}), open {{url}}, check {{unknown}} and {{url}} again with {{clipboard}} on {{port}}")
+        #expect(tokens == ["project", "branch", "url", "clipboard", "port"])
+        #expect(PromptVariables.tokens(in: "No placeholders or {{unknown}} only") == [])
+    }
+
+    @Test func worktreeSlugStripsProjectPrefixAndServerHelpersWork() {
+        let p1 = Project(name: "design-system", root: "/tmp/design-system-tokens", subpath: "packages/ui", branch: "feat/tokens", worktree: "design-system-tokens")
+        #expect(p1.worktreeSlug == "tokens")
+        #expect(p1.folder == "/tmp/design-system-tokens/packages/ui")
+
+        let p2 = Project(name: "app", root: "/tmp/wt", subpath: nil, branch: "main", worktree: "hotfix")
+        #expect(p2.worktreeSlug == "hotfix")
+
+        let bindingV4 = PortBinding(port: 3000, address: "127.0.0.1", isIPv6: false)
+        let bindingV6 = PortBinding(port: 3000, address: "::1", isIPv6: true, acceptsIPv4: false)
+        let mailpit = Server(
+            id: "mailpit", pid: 10, rootPid: 10, listenerPids: [10], startDate: now,
+            ports: [bindingV4, bindingV6], framework: .mailpit, project: nil,
+            processName: "mailpit", executable: "/opt/homebrew/bin/mailpit",
+            command: "mailpit", directory: "/tmp", launch: nil
+        )
+        #expect(mailpit.opensInBrowser)
+        #expect(mailpit.httpCheckKey == "/tmp:3000")
+        #expect(mailpit.localURL(for: bindingV4, explicitLoopback: true)?.absoluteString == "http://127.0.0.1:3000")
+        #expect(mailpit.localURL(for: bindingV6, explicitLoopback: true)?.absoluteString == "http://[::1]:3000")
+
+        let pg = Server(
+            id: "pg", pid: 11, rootPid: 11, listenerPids: [11], startDate: now,
+            ports: [PortBinding(port: 5432, address: "127.0.0.1", isIPv6: false)], framework: .postgres, project: nil,
+            processName: "postgres", executable: "/opt/homebrew/bin/postgres",
+            command: "postgres", directory: nil, launch: nil
+        )
+        #expect(!pg.opensInBrowser)
+        #expect(pg.localURL(for: pg.ports[0])?.absoluteString == "postgresql://localhost:5432")
+    }
 }

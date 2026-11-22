@@ -24,6 +24,10 @@ final class PromptStore {
     @ObservationIgnored private let persists: Bool
     /// The file exists but could not be read. Saving now would replace it, so nothing is saved until it reads again.
     @ObservationIgnored private var unreadable = false
+    /// Clipboard contents captured right before copying a prompt for paste, so they can be restored after ⌘V.
+    @ObservationIgnored private var pendingClipboardRestore: ClipboardSnapshot?
+    /// Tracks the original user clipboard across overlapping quick pastes while Vibe Kit still owns the pasteboard.
+    @ObservationIgnored private var activeClipboardRestore: ClipboardSnapshot?
 
     static let defaultFile = ServerStore.supportDirectory.appendingPathComponent("prompts.json")
 
@@ -110,10 +114,58 @@ final class PromptStore {
         edit(prompt.id) { $0.pinned.toggle() }
     }
 
+    /// Puts raw text on the clipboard without changing prompt usage order.
+    @discardableResult
+    func copyToClipboard(_ text: String, pasteboard: NSPasteboard = .general) -> Int {
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        return pasteboard.changeCount
+    }
+
     /// Puts the prompt on the clipboard without changing its order yet.
     func copyToClipboard(_ prompt: Prompt) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(prompt.text, forType: .string)
+        copyToClipboard(prompt.text)
+    }
+
+    /// Snapshots the clipboard (when `restore` is true) and writes `text` ready to paste into the front app.
+    /// Overlapping quick pastes carry the user's original clipboard forward while Vibe Kit still owns it.
+    func copyForPaste(_ text: String, restore: Bool, pasteboard: NSPasteboard = .general) {
+        guard restore else {
+            pendingClipboardRestore = nil
+            activeClipboardRestore = nil
+            _ = copyToClipboard(text, pasteboard: pasteboard)
+            return
+        }
+        let savedItems: [NSPasteboardItem]
+        if let existing = pendingClipboardRestore ?? activeClipboardRestore,
+           pasteboard.changeCount == existing.expectedChangeCount {
+            savedItems = existing.items
+        } else {
+            savedItems = ClipboardSnapshot.capture(from: pasteboard)
+        }
+        let changeCount = copyToClipboard(text, pasteboard: pasteboard)
+        let snapshot = ClipboardSnapshot(items: savedItems, expectedChangeCount: changeCount)
+        pendingClipboardRestore = snapshot
+        activeClipboardRestore = snapshot
+    }
+
+    func takePendingClipboardRestore() -> ClipboardSnapshot? {
+        defer { pendingClipboardRestore = nil }
+        return pendingClipboardRestore
+    }
+
+    func clearPendingClipboardRestore() {
+        pendingClipboardRestore = nil
+        activeClipboardRestore = nil
+    }
+
+    @discardableResult
+    func finishClipboardRestore(_ snapshot: ClipboardSnapshot, pasteboard: NSPasteboard = .general) -> Bool {
+        let restored = snapshot.restore(to: pasteboard)
+        if activeClipboardRestore?.expectedChangeCount == snapshot.expectedChangeCount {
+            activeClipboardRestore = nil
+        }
+        return restored
     }
 
     /// Counts one use of `id` and saves.
@@ -124,9 +176,9 @@ final class PromptStore {
         }
     }
 
-    /// Puts the prompt on the clipboard and counts the use.
-    func copy(_ prompt: Prompt) {
-        copyToClipboard(prompt)
+    /// Puts the prompt (or its expanded text) on the clipboard and counts the use.
+    func copy(_ prompt: Prompt, expandedText: String? = nil) {
+        copyToClipboard(expandedText ?? prompt.text)
         recordUse(prompt.id)
     }
 
@@ -179,5 +231,34 @@ final class PromptStore {
         up?.flags = .maskCommand
         down?.post(tap: .cgAnnotatedSessionEventTap)
         up?.post(tap: .cgAnnotatedSessionEventTap)
+    }
+}
+
+/// All items on a pasteboard before a paste, restored afterward only if nothing else wrote to it meanwhile.
+@MainActor
+struct ClipboardSnapshot {
+    let items: [NSPasteboardItem]
+    let expectedChangeCount: Int
+
+    static func capture(from pasteboard: NSPasteboard = .general) -> [NSPasteboardItem] {
+        (pasteboard.pasteboardItems ?? []).map { item in
+            let copy = NSPasteboardItem()
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    copy.setData(data, forType: type)
+                }
+            }
+            return copy
+        }
+    }
+
+    @discardableResult
+    func restore(to pasteboard: NSPasteboard = .general) -> Bool {
+        guard pasteboard.changeCount == expectedChangeCount else { return false }
+        pasteboard.clearContents()
+        if !items.isEmpty {
+            pasteboard.writeObjects(items)
+        }
+        return true
     }
 }

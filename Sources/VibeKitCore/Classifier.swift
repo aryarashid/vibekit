@@ -19,14 +19,18 @@ public struct ProcessFacts: Sendable {
 }
 
 /// Decides what a listening process is from its executable, argv and working directory.
-/// Pure apart from the `isProject` probe, so it is easy to test.
+/// Pure apart from the `isProject` and `fileExists` probes, so it is easy to test.
 public struct Classifier: Sendable {
     public var home: String
     public var isProject: @Sendable (String) -> Bool
+    /// Whether a file exists, used to tell what language a compiled binary's workspace is written in.
+    public var fileExists: @Sendable (String) -> Bool
 
-    public init(home: String = NSHomeDirectory(), isProject: @escaping @Sendable (String) -> Bool = Classifier.looksLikeProject) {
+    public init(home: String = NSHomeDirectory(), isProject: @escaping @Sendable (String) -> Bool = Classifier.looksLikeProject,
+                fileExists: @escaping @Sendable (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }) {
         self.home = home
         self.isProject = isProject
+        self.fileExists = fileExists
     }
 
     public func classify(_ facts: ProcessFacts) -> Framework {
@@ -42,7 +46,8 @@ public struct Classifier: Sendable {
             return devOrTool(.node, facts)
         }
         if process.isPython {
-            if Self.runsInlinePython(facts.argv) { return .tool }
+            // `gunicorn -c conf.py` and `hypercorn -c conf.toml` pass a config file, not code.
+            if process.isPythonInterpreter, Self.runsInlinePython(facts.argv) { return .tool }
             if let match = Self.python(process) { return match }
             return devOrTool(.python, facts)
         }
@@ -78,8 +83,37 @@ public struct Classifier: Sendable {
             || exePath.contains("/.build/arm64-apple-macosx/") || exePath.contains("/.build/x86_64-apple-macosx/") { return .swift }
         // `dotnet run` with an apphost runs the project's own binary from bin/<configuration>/net<version>/.
         if exePath.contains("/bin/Debug/net") || exePath.contains("/bin/Release/net") { return .dotnet }
+        // A binary built to a folder of its own choosing, such as `go build -o bin/api`, run from its workspace.
+        if let language = workspaceLanguage(facts) { return language }
 
         return .tool
+    }
+
+    /// The language of the workspace a compiled binary runs from, read from `go.mod`, `Cargo.toml` or `Package.swift`
+    /// in its working directory or up to two folders above it. Installed tools such as `ssh` or `kubectl` started from
+    /// a Go repository stay tools.
+    private func workspaceLanguage(_ facts: ProcessFacts) -> Framework? {
+        guard var dir = facts.cwd, isUserWorkspace(dir), !isInstalledTool(facts.executable) else { return nil }
+        for _ in 0..<3 {
+            if fileExists((dir as NSString).appendingPathComponent("go.mod")) { return .go }
+            if fileExists((dir as NSString).appendingPathComponent("Cargo.toml")) { return .rust }
+            if fileExists((dir as NSString).appendingPathComponent("Package.swift")) { return .swift }
+            let parent = (dir as NSString).deletingLastPathComponent
+            guard parent != dir, isUserWorkspace(parent) else { break }
+            dir = parent
+        }
+        return nil
+    }
+
+    /// Executables installed system-wide, by Homebrew, into a toolchain's bin folder, or by a package manager (such as
+    /// `workerd` or `esbuild` inside node_modules), rather than built in a workspace.
+    private func isInstalledTool(_ executable: String) -> Bool {
+        guard executable.hasPrefix("/"), !executable.contains("/node_modules/") else { return true }
+        for prefix in ["/usr/", "/bin/", "/sbin/", "/System/", "/Library/", "/opt/", "/Applications/", "/nix/", "/private/", "/var/"]
+            where executable.hasPrefix(prefix) {
+            return true
+        }
+        return executable.hasPrefix(home + "/.") || executable.hasPrefix(home + "/go/bin/") || executable.hasPrefix(home + "/Library/")
     }
 
     /// A runtime with no recognised framework counts as a dev server only when it runs from a project.
@@ -213,6 +247,14 @@ public struct Classifier: Sendable {
         case "ngrok": return .ngrok
         case "cloudflared": return .cloudflared
         case "mailpit", "mailhog": return .mailpit
+        case "llama-server": return .llamaCpp
+        case "vllm": return .vllm
+        case "mlx_lm.server": return .mlxLM
+        case "litellm": return .litellm
+        case "inngest", "inngest-cli": return .inngest
+        case "temporal", "temporalite": return .temporal
+        case "caddy": return .caddy
+        case "stripe": return .stripe
         case "com.docker.backend", "com.docker.vpnkit", "vpnkit-bridge", "docker-proxy", "com.docker.krun":
             return .docker
         default: break
@@ -227,6 +269,12 @@ public struct Classifier: Sendable {
         }
         if p.exe == "beam.smp", p.joined.contains("rabbit") { return .rabbitmq }
         if p.isPython, p.names.contains("localstack") { return .localstack }
+        // AI runners started through Python: `python …/bin/vllm serve`, `python -m mlx_lm.server`, `litellm --model`.
+        if p.isPython {
+            if p.names.contains("vllm") || p.names.contains(where: { $0.hasPrefix("vllm.entrypoints") }) { return .vllm }
+            if p.names.contains(where: { $0 == "mlx_lm" || $0.hasPrefix("mlx_lm.") }) { return .mlxLM }
+            if p.names.contains("litellm") { return .litellm }
+        }
         return nil
     }
 
@@ -259,10 +307,32 @@ public struct Classifier: Sendable {
         if n.contains("prisma") && n.contains("studio") { return .prismaStudio }
         if n.contains("drizzle-kit") { return .drizzleStudio }
         if n.contains("nest") { return .nest }
-        if n.contains("serve") || n.contains("http-server") || n.contains("live-server")
+        if n.contains("inngest-cli") { return .inngest }
+        if runsServe(p) || n.contains("http-server") || n.contains("live-server")
             || n.contains("json-server") || n.contains("browser-sync") { return .staticServer }
         return nil
     }
+
+    /// True when the `serve` package is the program, as in `npx serve dist` or `node …/.bin/serve`, and false when
+    /// `serve` is a subcommand of another script, as in `node mytool.js serve`.
+    static func runsServe(_ argv: [String]) -> Bool {
+        let words = argv.flatMap { $0.lowercased().split(separator: " ").map(String.init) }
+        guard let first = words.first else { return false }
+        func name(_ word: String) -> String { ((word as NSString).lastPathComponent as NSString).deletingPathExtension }
+        func isServe(_ word: String) -> Bool { name(word) == "serve" || word.contains("/node_modules/serve/") }
+        if name(first) == "serve" { return true }
+        // The script node or bun runs.
+        if ["node", "bun", "deno"].contains(name(first)), let script = words.dropFirst().first(where: { !$0.hasPrefix("-") }) {
+            if isServe(script) { return true }
+        }
+        // The package a runner fetches and runs: `npx serve`, `pnpm dlx serve`, `npm exec serve`.
+        for (i, word) in words.enumerated() where ["npx", "bunx", "pnpx", "dlx", "exec"].contains(name(word)) {
+            if let next = words[(i + 1)...].first(where: { !$0.hasPrefix("-") }), isServe(next) { return true }
+        }
+        return false
+    }
+
+    private static func runsServe(_ p: Tokens) -> Bool { runsServe(p.args) }
 
     private static func python(_ p: Tokens) -> Framework? {
         let n = p.names
@@ -315,8 +385,11 @@ private struct Tokens {
     }
 
     var isPython: Bool {
-        exe.hasPrefix("python") || exe == "uvicorn" || exe == "gunicorn" || path.contains("/Python.framework/")
+        isPythonInterpreter || ["uvicorn", "gunicorn", "granian", "hypercorn"].contains(exe)
     }
+
+    /// The interpreter itself, as opposed to a server's own entry point such as `gunicorn`.
+    var isPythonInterpreter: Bool { exe.hasPrefix("python") || path.contains("/Python.framework/") }
 
     func isRuntime(_ names: Set<String>) -> Bool { names.contains(exe) }
 }

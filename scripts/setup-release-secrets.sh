@@ -10,9 +10,18 @@
 #       login keychain, which is its backup), then upload SPARKLE_PRIVATE_KEY. Run once, ever: a
 #       new key would make every installed copy reject updates.
 #
+#   scripts/setup-release-secrets.sh --create-csr [--force]
+#       Generate a local RSA-2048 private key and Certificate Signing Request (CSR) to create a new
+#       5-year Developer ID Application certificate at developer.apple.com.
+#
+#   scripts/setup-release-secrets.sh --install-cer path/to/developerID_application.cer
+#       Pair the downloaded .cer with the key from --create-csr, import it into your login keychain
+#       (with Apple's Developer ID G2 intermediate CA), export a macOS-compatible .p12 in memory,
+#       upload DEVELOPER_ID_P12_BASE64 and DEVELOPER_ID_P12_PASSWORD, and delete the temp key.
+#
 #   scripts/setup-release-secrets.sh --developer-id path/to/DeveloperID.p12
 #       Upload a Developer ID Application certificate exported from Keychain Access with its
-#       private key. Asks for the .p12 password.
+#       private key. Asks for the .p12 password, and imports it locally if this Mac lacks one.
 #
 #   scripts/setup-release-secrets.sh --notary path/to/AuthKey_XXXX.p8 KEY_ID [ISSUER_ID]
 #       Upload an App Store Connect API key for notarization. Leave ISSUER_ID out for an individual key.
@@ -20,9 +29,23 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 REPO="${GITHUB_REPOSITORY:-aryarashid/vibekit}"
+CSR_DIR="${VIBEKIT_CSR_DIR:-$HOME/.vibekit-devid-csr}"
+# Always use macOS's built-in LibreSSL so exported .p12 files stay compatible with security(1)
+# even when Homebrew OpenSSL 3/4 is first on PATH.
+OPENSSL=/usr/bin/openssl
 NAMES=(DEVELOPER_ID_P12_BASE64 DEVELOPER_ID_P12_PASSWORD NOTARY_KEY_P8 NOTARY_KEY_ID NOTARY_ISSUER_ID SPARKLE_PRIVATE_KEY)
 
 put() { gh secret set "$1" --repo "$REPO" >/dev/null && echo "Set $1"; }
+
+ensure_g2_ca() {
+  local keychain="$HOME/Library/Keychains/login.keychain-db"
+  if security find-certificate -c "Developer ID Certification Authority" -a "$keychain" >/dev/null 2>&1; then
+    return 0
+  fi
+  local g2="$1/DeveloperIDG2CA.cer"
+  curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$g2"
+  security import "$g2" -k "$keychain" >/dev/null 2>&1 || true
+}
 
 case "${1:-}" in
   --check)
@@ -32,6 +55,114 @@ case "${1:-}" in
       elif [[ "$name" == NOTARY_ISSUER_ID ]]; then echo "optional $name (team API keys only)"
       else echo "missing  $name"; fi
     done
+    ;;
+  --create-csr)
+    key="$CSR_DIR/devid.key"
+    csr="$CSR_DIR/VibeKit-DeveloperID.certSigningRequest"
+    if [[ -f "$key" && "${2:-}" != "--force" ]]; then
+      echo "A pending key already exists at $key." >&2
+      echo "Upload $csr, or pass --force to replace it." >&2
+      exit 1
+    fi
+    (umask 077 && mkdir -p "$CSR_DIR")
+    chmod 700 "$CSR_DIR"
+    (umask 077 && "$OPENSSL" genrsa -out "$key" 2048 2>/dev/null)
+    "$OPENSSL" req -new -key "$key" -subj "/CN=Vibe Kit Developer ID/O=Vibe Kit" -out "$csr"
+    echo "Created CSR: $csr"
+    echo
+    echo "Next steps:"
+    echo "  1. Open https://developer.apple.com/account/resources/certificates/add"
+    echo "  2. Select 'Developer ID Application', upload the CSR above, and download the .cer file."
+    echo "  3. Run: scripts/setup-release-secrets.sh --install-cer ~/Downloads/developerID_application.cer"
+    ;;
+  --install-cer)
+    cer="${2:?Pass the downloaded .cer file}"
+    key="$CSR_DIR/devid.key"
+    [[ -f "$cer" ]] || { echo "Certificate file not found: $cer" >&2; exit 1; }
+    [[ -f "$key" ]] || { echo "Pending private key not found at $key. Run --create-csr first." >&2; exit 1; }
+    tmp="$(mktemp -d)"
+    chmod 700 "$tmp"
+    verify_kc="$tmp/verify.keychain-db"
+    cleanup() {
+      security delete-keychain "$verify_kc" >/dev/null 2>&1 || true
+      rm -rf "$tmp"
+    }
+    trap cleanup EXIT
+
+    pem="$tmp/cert.pem"
+    if "$OPENSSL" x509 -in "$cer" -inform PEM -out "$pem" >/dev/null 2>&1; then
+      :
+    elif "$OPENSSL" x509 -in "$cer" -inform DER -out "$pem" >/dev/null 2>&1; then
+      :
+    else
+      echo "Could not read $cer as a PEM or DER X.509 certificate." >&2
+      exit 1
+    fi
+
+    subject="$("$OPENSSL" x509 -in "$pem" -noout -subject)"
+    if [[ "$subject" != *"Developer ID Application"* ]]; then
+      echo "Expected a 'Developer ID Application' certificate, got: $subject" >&2
+      exit 1
+    fi
+    cn="$(sed -n 's/.*CN=\([^,/]*\).*/\1/p' <<< "$subject" | head -1)"
+    [[ -n "$cn" ]] || cn="Developer ID Application"
+
+    cert_mod="$("$OPENSSL" x509 -in "$pem" -noout -modulus | "$OPENSSL" sha256)"
+    key_mod="$("$OPENSSL" rsa -in "$key" -noout -modulus 2>/dev/null | "$OPENSSL" sha256)"
+    if [[ "$cert_mod" != "$key_mod" ]]; then
+      echo "This certificate does not match the private key in $key." >&2
+      exit 1
+    fi
+
+    pass_file="$tmp/p12.pass"
+    (umask 077 && "$OPENSSL" rand -base64 36 | tr -d '/+=\n' | head -c 32 > "$pass_file")
+    p12="$tmp/DeveloperID.p12"
+    pkcs12_args=(-export -inkey "$key" -in "$pem" -out "$p12" -passout "file:$pass_file")
+    if [[ "${SKIP_KEYCHAIN_IMPORT:-0}" != "1" ]]; then
+      ensure_g2_ca "$tmp"
+      g2_pem="$tmp/g2.pem"
+      if security find-certificate -c "Developer ID Certification Authority" -p "$HOME/Library/Keychains/login.keychain-db" > "$g2_pem" 2>/dev/null \
+        && [[ -s "$g2_pem" ]]; then
+        pkcs12_args+=(-certfile "$g2_pem")
+      fi
+    fi
+    (umask 077 && "$OPENSSL" pkcs12 "${pkcs12_args[@]}")
+
+    # Verify macOS security(1) can import and pair the exported .p12 before uploading.
+    verify_pass="$("$OPENSSL" rand -hex 16)"
+    p12_pass="$(cat "$pass_file")"
+    security create-keychain -p "$verify_pass" "$verify_kc"
+    security unlock-keychain -p "$verify_pass" "$verify_kc"
+    security import "$p12" -k "$verify_kc" -P "$p12_pass" -A >/dev/null
+    verify_flags=(-p codesigning)
+    if [[ "${ALLOW_UNTRUSTED_VERIFY:-0}" != "1" ]]; then
+      verify_flags=(-v -p codesigning)
+    fi
+    if ! security find-identity "${verify_flags[@]}" "$verify_kc" | grep -qF "$cn"; then
+      echo "Exported .p12 failed macOS keychain verification for '$cn'." >&2
+      exit 1
+    fi
+
+    if [[ "${SKIP_KEYCHAIN_IMPORT:-0}" != "1" ]]; then
+      security import "$p12" -k "$HOME/Library/Keychains/login.keychain-db" \
+        -P "$p12_pass" -T /usr/bin/codesign -T /usr/bin/security >/dev/null
+      echo "Imported Developer ID Application identity into login keychain."
+    fi
+
+    if [[ "${SKIP_GH_UPLOAD:-0}" != "1" ]]; then
+      base64 < "$p12" | tr -d '\n' | put DEVELOPER_ID_P12_BASE64
+      put DEVELOPER_ID_P12_PASSWORD < "$pass_file"
+    fi
+
+    rm -f "$key" "$CSR_DIR/VibeKit-DeveloperID.certSigningRequest"
+    rmdir "$CSR_DIR" 2>/dev/null || true
+    echo "Removed temporary private key and CSR."
+    if [[ "${SKIP_KEYCHAIN_IMPORT:-0}" != "1" ]]; then
+      security find-identity -v -p codesigning | grep "Developer ID Application" || true
+    fi
+    if [[ "${SKIP_GH_UPLOAD:-0}" != "1" ]]; then
+      "$0" --check
+    fi
     ;;
   --sparkle)
     tool_dir="$(dirname "$(scripts/sparkle.sh sign-update)")"
@@ -54,6 +185,15 @@ case "${1:-}" in
     base64 < "$p12" | tr -d '\n' | put DEVELOPER_ID_P12_BASE64
     read -rsp "Password for $(basename "$p12"): " password; echo
     printf '%s' "$password" | put DEVELOPER_ID_P12_PASSWORD
+    if [[ "${SKIP_KEYCHAIN_IMPORT:-0}" != "1" ]] \
+      && ! security find-identity -v -p codesigning | grep -q "Developer ID Application"; then
+      tmp="$(mktemp -d)"
+      trap 'rm -rf "$tmp"' EXIT
+      ensure_g2_ca "$tmp"
+      security import "$p12" -k "$HOME/Library/Keychains/login.keychain-db" \
+        -P "$password" -T /usr/bin/codesign -T /usr/bin/security >/dev/null
+      echo "Imported Developer ID Application identity into login keychain."
+    fi
     ;;
   --notary)
     p8="${2:?Pass the AuthKey .p8 file}"; key_id="${3:?Pass the key ID}"
@@ -70,7 +210,7 @@ case "${1:-}" in
     fi
     ;;
   *)
-    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac

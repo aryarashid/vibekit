@@ -10,6 +10,8 @@ struct SettingsPage: View {
     private var settings: Settings { store.settings }
     private var updater: Updater { Updater.shared }
     @State private var pasteAccess = PromptStore.canPaste
+    @State private var cliStatus: CLIInstaller.Status = .notInstalled
+    @State private var cliError: String?
 
     var body: some View {
         @Bindable var settings = settings
@@ -64,6 +66,9 @@ struct SettingsPage: View {
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
                         }
+                        if settings.pasteOnUse {
+                            toggle("Restore clipboard after pasting", isOn: $settings.restoreClipboardAfterPaste)
+                        }
                         HStack {
                             Text("Prompts file").font(.system(size: 12.5))
                             Text("prompts.json").font(Theme.monoSmall).foregroundStyle(Theme.readout)
@@ -79,6 +84,7 @@ struct SettingsPage: View {
                         picker("Editor", selection: $settings.editorID, apps: ExternalApp.editors)
                         picker("Terminal", selection: $settings.terminalID, apps: ExternalApp.terminals)
                     }
+                    group("Command line") { cliRows }
                     group("Updates") { updateRows }
                     group("Keyboard shortcuts") {
                         shortcut("↑  ↓", "Move between servers")
@@ -118,6 +124,7 @@ struct SettingsPage: View {
             if !store.isDemo {
                 settings.refreshLaunchAtLogin()
                 settings.refreshLidStayAwake()
+                cliStatus = CLIInstaller().status()
             }
             pasteAccess = PromptStore.canPaste
         }
@@ -154,9 +161,19 @@ struct SettingsPage: View {
             } else if settings.lidHelperBusy {
                 lidNotice("Installing the helper…")
             } else if settings.lidHelperPaused {
-                lidNotice("Paused. The helper was set up for another copy of Vibe Kit, or has stopped. Switch this on to set it up again.", warning: true)
+                lidNotice("Paused. The helper is not running, or the copy of Vibe Kit it was set up for is gone. Switch this on to set it up again.", warning: true)
+            } else if settings.lidHelperOutdatedActive {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    lidNotice("On, using the helper from an earlier version of Vibe Kit. Update to switch to the new native helper.", warning: true)
+                    Spacer(minLength: 0)
+                    Button("Update") { Task { await settings.updateLidHelper() } }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Theme.violet)
+                        .fontWeight(.semibold)
+                        .disabled(settings.lidHelperBusy)
+                }
             } else if settings.lidStayAwake {
-                lidNotice("The screen turns off when the lid closes, but agents keep working until the time is up, then the Mac sleeps. It sleeps right away at 15% battery or less, and never on its own while docked to a display. While this is on, the Mac also won't go to sleep by itself with the lid open.")
+                lidNotice("The screen turns off when the lid closes, and work keeps running until the time is up. It sleeps right away at 15% battery or less (open or closed), and stays awake while docked to a display.")
             } else if settings.lidHelperInstalled {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text("Off. The helper is installed but does nothing.")
@@ -172,6 +189,70 @@ struct SettingsPage: View {
         .font(Theme.metaFont)
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
+    }
+
+    @ViewBuilder private var cliRows: some View {
+        let installer = CLIInstaller()
+        let displayPath = store.isDemo ? "~/.local/bin/vibekit" : Format.path(installer.directory.appendingPathComponent("vibekit").path)
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    Text("vibekit CLI").font(.system(size: 12.5))
+                    Text(displayPath)
+                        .font(Theme.monoSmall)
+                        .foregroundStyle(Theme.readout)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if let cliError {
+                    Text(cliError)
+                        .font(Theme.metaFont)
+                        .foregroundStyle(Theme.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    switch cliStatus {
+                    case .installed:
+                        Text("Installed. Supports --list --json, port, stop, restart, logs, and --mcp.")
+                            .font(Theme.metaFont)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    case .notInstalled:
+                        Text("Adds a symlink so scripts and coding agents can run vibekit --list --json or vibekit --mcp.")
+                            .font(Theme.metaFont)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    case .conflict(let url):
+                        Text("\(Format.path(url.path)) already exists and belongs to another tool.")
+                            .font(Theme.metaFont)
+                            .foregroundStyle(Theme.warning)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            Spacer(minLength: 8)
+            switch cliStatus {
+            case .notInstalled:
+                Button("Install") {
+                    guard !store.isDemo else { return }
+                    cliError = nil
+                    do { cliStatus = try installer.install() }
+                    catch { cliError = error.localizedDescription }
+                }
+                .controlSize(.small)
+            case .installed:
+                Button("Remove") {
+                    guard !store.isDemo else { return }
+                    cliError = nil
+                    do { cliStatus = try installer.uninstall() }
+                    catch { cliError = error.localizedDescription }
+                }
+                .controlSize(.small)
+            case .conflict:
+                EmptyView()
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
     }
 
     @ViewBuilder private var updateRows: some View {

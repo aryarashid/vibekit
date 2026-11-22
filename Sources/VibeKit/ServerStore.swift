@@ -61,6 +61,14 @@ struct ManagedProcess: Codable, Hashable {
     let pid: Int32
     let started: Date
     let log: URL
+    /// Headless launches can finish while the GUI is closed, before it can create a Recently Stopped entry.
+    var owner: LogOwner? = nil
+
+    struct LogOwner: Codable, Hashable {
+        let title: String
+        let ports: [UInt16]
+        let directory: String
+    }
 }
 
 enum Pending: Equatable {
@@ -89,6 +97,8 @@ final class ServerStore {
     private(set) var pending: [String: Pending] = [:]
     private(set) var toast: Toast?
     private(set) var hasScanned = false
+    /// Managed servers that crashed while the panel was closed, cleared on the next open.
+    private(set) var unreadCrashes = 0
 
     let settings: Settings
     @ObservationIgnored private let persistenceDirectory: URL
@@ -101,6 +111,19 @@ final class ServerStore {
             guard isPanelOpen != oldValue else { return }
             if isPanelOpen {
                 lanAddress = Network.lanAddress()
+                if unreadCrashes > 0 {
+                    let count = unreadCrashes
+                    let last = lastCrashNotice
+                    unreadCrashes = 0
+                    lastCrashNotice = nil
+                    let message: String
+                    if count == 1, let last {
+                        message = "\(last.title) crashed (exit \(last.code)). Check Recently Stopped."
+                    } else {
+                        message = "\(count) servers crashed while closed. Check Recently Stopped."
+                    }
+                    show(Toast(message: message, isError: true))
+                }
                 // Ask again, once, about servers that were failing or silent last time, or not asked for a while,
                 // so a server that started failing since does not stay green.
                 let stale = Date().addingTimeInterval(-300)
@@ -118,6 +141,8 @@ final class ServerStore {
     @ObservationIgnored private var timer: DispatchSourceTimer?
     @ObservationIgnored private(set) var isDemo = false
     @ObservationIgnored private var probing = Set<String>()
+    @ObservationIgnored private var probeTokens: [String: UInt64] = [:]
+    @ObservationIgnored private var nextProbeToken: UInt64 = 0
     @ObservationIgnored private var staleProbes = Set<String>()
     @ObservationIgnored private var probeAttempts: [String: Int] = [:]
     @ObservationIgnored private var retryAt: [String: Date] = [:]
@@ -136,6 +161,7 @@ final class ServerStore {
     @ObservationIgnored private var recentPids: [Int32: String] = [:]
     /// Servers Vibe Kit started this session, by PID, until they exit.
     @ObservationIgnored private var launches: [Int32: Launch] = [:]
+    @ObservationIgnored private var lastCrashNotice: (title: String, code: Int32)?
 
     private struct Launch {
         let pendingID: String
@@ -154,8 +180,10 @@ final class ServerStore {
         self.persistenceDirectory = persistenceDirectory
         self.logsDirectory = logsDirectory
         recents = Self.load([RecentServer].self, from: persistenceDirectory.appendingPathComponent("recents.json")) ?? []
+        let cutoff = Date().addingTimeInterval(-86_400)
         managed = (Self.load([String: ManagedProcess].self, from: persistenceDirectory.appendingPathComponent("managed.json")) ?? [:]).filter { _, process in
-            LibProc.startDate(process.pid).map { abs($0.timeIntervalSince(process.started)) < 1 } ?? false
+            (process.owner != nil && process.started > cutoff && FileManager.default.fileExists(atPath: process.log.path))
+                || (LibProc.startDate(process.pid).map { abs($0.timeIntervalSince(process.started)) < 1 } ?? false)
         }
     }
 
@@ -176,6 +204,10 @@ final class ServerStore {
     func start() {
         schedule()
         scanNow(fullSweep: true)
+        guard !isDemo else { return }
+        let directory = logsDirectory
+        let keep = Set(managed.values.map { $0.log.standardizedFileURL } + recents.compactMap { $0.log?.standardizedFileURL })
+        queue.async { Self.pruneLogs(in: directory, keep: keep) }
     }
 
     private var scanCategories: Set<ServerCategory> {
@@ -192,21 +224,24 @@ final class ServerStore {
         let interval: DispatchTimeInterval = open ? .milliseconds(1500) : .seconds(4)
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + interval, repeating: interval, leeway: open ? .milliseconds(150) : .seconds(1))
-        timer.setEventHandler(handler: Self.scanJob(scanner, categories: scanCategories, fullSweep: false, store: self))
+        timer.setEventHandler(handler: Self.scanJob(scanner, categories: scanCategories, fullSweep: false,
+                                                    resolveContainers: isPanelOpen, store: self))
         timer.resume()
         self.timer = timer
     }
 
     func scanNow(fullSweep: Bool = false) {
         guard !isDemo else { return }
-        queue.async(execute: Self.scanJob(scanner, categories: scanCategories, fullSweep: fullSweep, store: self))
+        queue.async(execute: Self.scanJob(scanner, categories: scanCategories, fullSweep: fullSweep,
+                                          resolveContainers: isPanelOpen, store: self))
     }
 
     /// Built outside the main actor because it runs on the scan queue.
     private nonisolated static func scanJob(_ scanner: PortScanner, categories: Set<ServerCategory>, fullSweep: Bool,
-                                            store: ServerStore) -> @Sendable () -> Void {
+                                            resolveContainers: Bool, store: ServerStore) -> @Sendable () -> Void {
         { [weak store] in
-            let result = scanner.scan(usageFor: categories, fullSweep: fullSweep)
+            var result = scanner.scan(usageFor: categories, fullSweep: fullSweep)
+            if resolveContainers { result = ContainerResolver.resolve(servers: result) }
             Task { @MainActor in store?.apply(result) }
         }
     }
@@ -218,6 +253,9 @@ final class ServerStore {
 
     private func apply(_ scanned: [Server]) {
         guard !isDemo else { return }
+        // Restarts from the CLI can publish logs while the panel is running.
+        let registry = ManagedRegistry(directory: persistenceDirectory)
+        if let external = try? registry.load() { managed.merge(external) { _, new in new } }
         let sorted = scanned.sorted { a, b in
             if a.category != b.category { return a.category.sortOrder < b.category.sortOrder }
             let byTitle = a.title.localizedStandardCompare(b.title)
@@ -271,30 +309,33 @@ final class ServerStore {
         if pages.keys.contains(where: { !ids.contains($0) }) { pages = pages.filter { ids.contains($0.key) } }
         if unanswered.contains(where: { !ids.contains($0) }) { unanswered = unanswered.filter { ids.contains($0) } }
         probeAttempts = probeAttempts.filter { ids.contains($0.key) }
+        probeTokens = probeTokens.filter { ids.contains($0.key) }
+        probing = probing.filter { ids.contains($0) }
         retryAt = retryAt.filter { ids.contains($0.key) }
         probedAt = probedAt.filter { ids.contains($0.key) }
 
         // Ports where `localhost` could reach more than one server. Other listeners count: AirPlay holds 5000 and 7000.
-        var owners: [UInt16: Set<String>] = [:]
-        for server in sorted {
-            for binding in server.ports where binding.isWildcard || binding.isLocalhost {
-                owners[binding.port, default: []].insert(server.id)
-            }
-        }
-        let shared = Set(owners.filter { $0.value.count > 1 }.keys)
+        let shared = Server.sharedPorts(in: sorted)
         if shared != sharedPorts { sharedPorts = shared }
         for (pid, fd) in stdinWriters where !sorted.contains(where: { $0.rootPid == pid }) && !ProcessControl.isAlive(pid) {
             close(fd)
             stdinWriters[pid] = nil
         }
         // Drop finished managed entries now that `remember` has copied any log onto Recently Stopped.
+        // Keep headless CLI entries (which have `owner != nil`) for 24h while their log exists so
+        // `vibekit logs` can still read a server that crashed before a GUI scan saw it listening.
+        let headlessCutoff = Date().addingTimeInterval(-86_400)
         let liveManaged = managed.filter { key, process in
-            ids.contains(key) || (ProcessControl.isAlive(process.pid)
-                && LibProc.startDate(process.pid).map { abs($0.timeIntervalSince(process.started)) < 1 } == true)
+            ids.contains(key)
+                || (process.owner != nil && process.started > headlessCutoff && FileManager.default.fileExists(atPath: process.log.path))
+                || (ProcessControl.isAlive(process.pid)
+                    && LibProc.startDate(process.pid).map { abs($0.timeIntervalSince(process.started)) < 1 } == true)
         }
         if liveManaged.count != managed.count {
-            managed = liveManaged
-            saveManaged()
+            let stale = managed.filter { liveManaged[$0.key] == nil }
+            managed = (try? registry.update { entries in
+                for (key, old) in stale where entries[key] == old { entries[key] = nil }
+            }) ?? liveManaged
         }
 
         if sorted != servers { servers = sorted }
@@ -315,40 +356,140 @@ final class ServerStore {
     private func probeNewServers() {
         let now = Date()
         for server in servers where server.category == .dev && server.framework.speaksHTTP
+            && !settings.skippedHTTPChecks.contains(server.httpCheckKey)
             && (pages[server.id] == nil || staleProbes.contains(server.id)) && !probing.contains(server.id)
             && (retryAt[server.id].map { $0 <= now } ?? true) {
-            probing.insert(server.id)
             staleProbes.remove(server.id)
-            let id = server.id
-            let host = server.host
-            let port = server.primaryPort
-            Task {
-                let page = await Probe.page(host: host, port: port)
-                self.probing.remove(id)
-                guard self.servers.contains(where: { $0.id == id }) else { return }
-                self.probedAt[id] = Date()
-                if let page {
-                    if self.pages[id] != page { self.pages[id] = page }
-                    self.unanswered.remove(id)
-                    self.probeAttempts[id] = nil
-                } else {
-                    let attempts = (self.probeAttempts[id] ?? 0) + 1
-                    self.probeAttempts[id] = attempts
-                    // A server that is still compiling gets another try within seconds.
-                    let delays: [TimeInterval] = [2, 4, 8, 15, 30, 60]
-                    self.retryAt[id] = Date().addingTimeInterval(delays[min(attempts - 1, delays.count - 1)])
-                    if attempts >= 2 || self.pages[id] != nil { self.unanswered.insert(id) }
-                    // A cached page would stop the retries, so keep the server due for another look.
-                    if self.pages[id] != nil { self.staleProbes.insert(id) }
-                }
+            probe(server)
+        }
+    }
+
+    private func probe(_ server: Server, manual: Bool = false) {
+        guard !isDemo, !probing.contains(server.id) else { return }
+        probing.insert(server.id)
+        let id = server.id
+        let key = server.httpCheckKey
+        nextProbeToken &+= 1
+        let token = nextProbeToken
+        probeTokens[id] = token
+        let host = host(for: server)
+        let port = server.primaryPort
+        Task {
+            let page = await Probe.page(host: host, port: port)
+            guard self.probeTokens[id] == token else { return }
+            self.probing.remove(id)
+            guard self.servers.contains(where: { $0.id == id }) else { return }
+            guard manual || !self.settings.skippedHTTPChecks.contains(key) else { return }
+            self.probedAt[id] = Date()
+            if let page {
+                if self.pages[id] != page { self.pages[id] = page }
+                self.unanswered.remove(id)
+                self.probeAttempts[id] = nil
+            } else {
+                let attempts = (self.probeAttempts[id] ?? 0) + 1
+                self.probeAttempts[id] = attempts
+                // A server that is still compiling gets another try within seconds.
+                let delays: [TimeInterval] = [2, 4, 8, 15, 30, 60]
+                self.retryAt[id] = Date().addingTimeInterval(delays[min(attempts - 1, delays.count - 1)])
+                if attempts >= 2 || self.pages[id] != nil { self.unanswered.insert(id) }
+                // A cached page would stop the retries, so keep the server due for another look.
+                if self.pages[id] != nil { self.staleProbes.insert(id) }
             }
         }
     }
 
+    /// Forces an immediate single HTTP status probe for `server`.
+    func reprobe(_ server: Server) {
+        guard server.framework.speaksHTTP else { return }
+        probing.remove(server.id)
+        unanswered.remove(server.id)
+        retryAt[server.id] = nil
+        probeAttempts[server.id] = nil
+        staleProbes.remove(server.id)
+        probe(server, manual: true)
+    }
+
+    /// Opts a server out of (or back into) HTTP status checks.
+    func toggleSkipHTTP(_ server: Server) {
+        let key = server.httpCheckKey
+        if settings.skippedHTTPChecks.contains(key) {
+            settings.skippedHTTPChecks.remove(key)
+            reprobe(server)
+        } else {
+            settings.skippedHTTPChecks.insert(key)
+            nextProbeToken &+= 1
+            probeTokens[server.id] = nextProbeToken
+            probing.remove(server.id)
+            unanswered.remove(server.id)
+            pages[server.id] = nil
+            staleProbes.remove(server.id)
+            retryAt[server.id] = nil
+            probeAttempts[server.id] = nil
+        }
+    }
+
+    // MARK: Prompt Context
+
+    /// The best active dev server to populate prompt variables: a failing dev server first,
+    /// otherwise the single or most recently started dev server.
+    var contextServer: Server? {
+        let dev = devServers
+        guard !dev.isEmpty else { return nil }
+        let failing = dev.filter { light(for: $0) == .failing }
+        if !failing.isEmpty {
+            return failing.max { $0.startDate < $1.startDate }
+        }
+        if dev.count == 1 { return dev[0] }
+        return dev.max { $0.startDate < $1.startDate }
+    }
+
+    func promptContext(clipboard: String?) -> PromptContext {
+        let server = contextServer
+        let cleanClipboard = clipboard.flatMap { $0.isEmpty ? nil : $0 }
+        return PromptContext(
+            clipboard: cleanClipboard,
+            url: server.flatMap { url(for: $0)?.absoluteString },
+            port: server.map { String($0.primaryPort) },
+            branch: server?.project?.branch,
+            project: server?.project?.name ?? server?.title
+        )
+    }
+
+    // MARK: Shared Ports
+
+    func otherServers(sharingPort port: UInt16, with server: Server) -> [Server] {
+        servers.filter { other in
+            other.id != server.id && other.ports.contains { $0.port == port && ($0.isWildcard || $0.isLocalhost) }
+        }
+    }
+
+    /// Tag label for a port shared with another listener, naming the address family when it distinguishes this server.
+    func sharedPortLabel(for server: Server, binding: PortBinding) -> String {
+        if !binding.isIPv6 { return "shared · IPv4" }
+        if !binding.acceptsIPv4 { return "shared · IPv6" }
+        let others = otherServers(sharingPort: binding.port, with: server)
+        let allOthersIPv4 = !others.isEmpty && others.allSatisfy { other in
+            other.ports.first { $0.port == binding.port }.map { !$0.isIPv6 } ?? false
+        }
+        return allOthersIPv4 ? "shared · IPv6" : "shared port"
+    }
+
     // MARK: Actions
 
+    /// Host for reaching a server binding, using explicit `127.0.0.1` / `[::1]` when another server shares the port.
+    func host(for server: Server, binding: PortBinding? = nil) -> String {
+        guard let target = binding ?? server.ports.first else { return server.host }
+        return server.host(for: target, explicitLoopback: sharedPorts.contains(target.port))
+    }
+
     /// The server's address on this Mac, over HTTPS when that is all it answered.
-    func url(for server: Server) -> URL? { server.localURL(secure: pages[server.id]?.isSecure ?? false) }
+    func url(for server: Server, binding: PortBinding? = nil) -> URL? {
+        guard let target = binding ?? server.ports.first else {
+            return server.localURL(secure: pages[server.id]?.isSecure ?? false)
+        }
+        let secure = target.port == server.primaryPort && (pages[server.id]?.isSecure ?? false)
+        return server.localURL(for: target, secure: secure, explicitLoopback: sharedPorts.contains(target.port))
+    }
 
     /// The probe only asks the primary port, so its HTTPS answer applies only when that is the port shared on the network.
     func networkURL(for server: Server) -> URL? {
@@ -357,8 +498,8 @@ final class ServerStore {
         return server.networkURL(host: lanAddress, secure: secure)
     }
 
-    func open(_ server: Server) {
-        guard let url = url(for: server) else { return }
+    func open(_ server: Server, binding: PortBinding? = nil) {
+        guard let url = url(for: server, binding: binding) else { return }
         NSWorkspace.shared.open(url)
     }
 
@@ -374,7 +515,7 @@ final class ServerStore {
     }
 
     func stop(_ server: Server) {
-        guard pending[server.id] == nil else { return }
+        guard !server.isContainerControlled, pending[server.id] == nil else { return }
         pending[server.id] = .stopping
         schedule()
         Task {
@@ -390,6 +531,7 @@ final class ServerStore {
 
     /// Also cancels a restart in progress: the restart sees it is no longer pending and does not start it again.
     func forceQuit(_ server: Server) {
+        guard !server.isContainerControlled else { return }
         pending[server.id] = .stopping
         schedule()
         ProcessControl.forceKill(root: server.rootPid, started: server.startDate)
@@ -409,7 +551,7 @@ final class ServerStore {
     }
 
     func restart(_ server: Server) {
-        guard let launch = server.launch, pending[server.id] == nil else { return }
+        guard !server.isContainerControlled, let launch = server.launch, pending[server.id] == nil else { return }
         pending[server.id] = .restarting
         schedule()
         Task {
@@ -468,8 +610,10 @@ final class ServerStore {
                 launches[spawned.pid] = Launch(pendingID: pendingID, entry: entry, log: log, started: started)
                 stdinWriters[spawned.pid] = spawned.stdinWriter
                 if let started = LibProc.startDate(spawned.pid) {
-                    managed["\(spawned.pid)-\(Int(started.timeIntervalSince1970))"] = ManagedProcess(pid: spawned.pid, started: started, log: log)
-                    saveManaged()
+                    let key = "\(spawned.pid)-\(Int(started.timeIntervalSince1970))"
+                    let record = ManagedProcess(pid: spawned.pid, started: started, log: log)
+                    managed[key] = record
+                    _ = try? ManagedRegistry(directory: persistenceDirectory).update { $0[key] = record }
                 }
                 scanNow()
                 // Clear the spinner if the server never binds its port, and say so.
@@ -534,6 +678,7 @@ final class ServerStore {
         var reason = reason
         if reason == .exited, let code = exitCodes.removeValue(forKey: server.rootPid), Self.isCrash(code) {
             reason = .crashed(code: code)
+            recordCrash(title: server.title, code: code)
         }
         guard Self.isWorthRemembering(reason: reason, lifetime: Date().timeIntervalSince(server.startDate), managed: log != nil) else { return }
         let recent = RecentServer(server, launch: launch, reason: reason, log: log)
@@ -572,6 +717,7 @@ final class ServerStore {
             let crashed = Self.isCrash(code)
             add(launch.entry.stopped(crashed ? .crashed(code: code) : .exited, log: launch.log))
             let title = launch.entry.title
+            if crashed { recordCrash(title: title, code: code) }
             show(Toast(message: crashed ? "\(title) exited with code \(code). Check its log." : "\(title) exited before it opened a port.",
                        isError: true))
             schedule()
@@ -580,10 +726,39 @@ final class ServerStore {
         guard Self.isCrash(code) else { return }
         if let recentID, let index = recents.firstIndex(where: { $0.id == recentID }), recents[index].reason == .exited {
             recents[index].reason = .crashed(code: code)
+            recordCrash(title: recents[index].title, code: code)
             saveRecents()
         } else if recentID == nil {
             exitCodes[pid] = code
             if exitCodes.count > 32, let old = exitCodes.keys.first(where: { $0 != pid }) { exitCodes[old] = nil }
+        }
+    }
+
+    func recordCrash(title: String, code: Int32) {
+        guard !isPanelOpen else { return }
+        unreadCrashes += 1
+        lastCrashNotice = (title, code)
+    }
+
+    /// Keeps the newest `maxCount` logs and drops files older than `maxAge` that are not referenced by `keep`.
+    nonisolated static func pruneLogs(in directory: URL, keep: Set<URL>, maxCount: Int = 50,
+                                      maxAge: TimeInterval = 30 * 86_400, now: Date = Date()) {
+        let fm = FileManager.default
+        guard let urls = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+                                                     options: [.skipsHiddenFiles]) else { return }
+        let logs: [(url: URL, modified: Date)] = urls.compactMap { url in
+            guard url.pathExtension == "log",
+                  let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey]),
+                  values.isRegularFile == true else { return nil }
+            return (url, values.contentModificationDate ?? .distantPast)
+        }.sorted { $0.modified > $1.modified }
+
+        let protected = Set(keep.map(\.standardizedFileURL))
+        for (index, entry) in logs.enumerated() {
+            if protected.contains(entry.url.standardizedFileURL) { continue }
+            if index >= maxCount || now.timeIntervalSince(entry.modified) > maxAge {
+                try? fm.removeItem(at: entry.url)
+            }
         }
     }
 
@@ -629,18 +804,19 @@ final class ServerStore {
         self.pages = pages
         self.history = history
         self.recents = recents
+        sharedPorts = Server.sharedPorts(in: servers)
         lanAddress = "192.168.1.24"
         hasScanned = true
     }
 
     // MARK: Persistence
 
-    static let supportDirectory: URL = {
+    nonisolated static let supportDirectory: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appendingPathComponent("VibeKit", isDirectory: true)
     }()
 
-    static let logsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    nonisolated static let logsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Logs/VibeKit", isDirectory: true)
 
     private static func load<T: Decodable>(_ type: T.Type, from file: URL) -> T? {
@@ -656,5 +832,4 @@ final class ServerStore {
     }
 
     private func saveRecents() { save(recents, to: "recents.json") }
-    private func saveManaged() { save(managed, to: "managed.json") }
 }

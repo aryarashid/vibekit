@@ -60,17 +60,34 @@ struct ServerRow: View {
     }
 
     private var primaryActionTitle: String {
-        if server.category == .dev && server.framework.speaksHTTP { return "Open in browser" }
+        if server.opensInBrowser { return "Open in browser" }
         if server.framework.urlScheme != nil || (server.category == .database && server.localURL != nil) { return "Copy URL" }
         return isExpanded ? "Hide details" : "Show details"
+    }
+
+    private var isDirectoryDeleted: Bool {
+        guard !store.isDemo, server.category == .dev else { return false }
+        return !server.directoryExists
+    }
+
+    private var worktreeTagText: String? {
+        guard let project = server.project, project.worktree != nil else { return nil }
+        let sameProjectCount = store.devServers.count { $0.project?.name == project.name }
+        if sameProjectCount >= 2, let slug = project.worktreeSlug {
+            return "wt: \(slug)"
+        }
+        return "worktree"
     }
 
     /// What the light and tags say, for VoiceOver.
     private var accessibilityState: String {
         if let pending { return pending == .restarting ? "Restarting" : pending == .starting ? "Starting" : "Stopping" }
         var parts = [lightHelp.isEmpty ? "Running" : lightHelp]
-        if server.project?.worktree != nil { parts.append("worktree") }
-        if server.ports.contains(where: { store.sharedPorts.contains($0.port) }) { parts.append("shared port") }
+        if let wt = worktreeTagText { parts.append(wt) }
+        if isDirectoryDeleted { parts.append("deleted directory") }
+        if let shared = server.ports.first(where: { store.sharedPorts.contains($0.port) }) {
+            parts.append(store.sharedPortLabel(for: server, binding: shared))
+        }
         if server.isExposed && server.category == .dev { parts.append("on the local network") }
         return parts.joined(separator: ", ")
     }
@@ -106,11 +123,18 @@ struct ServerRow: View {
                 .font(Theme.titleFont)
                 .lineLimit(1)
                 .truncationMode(.tail)
-            if let worktree = server.project?.worktree {
-                Tag(text: "worktree", help: "Linked worktree \(worktree)", tint: Theme.violet, symbol: compact ? "arrow.triangle.branch" : nil)
+            if let worktree = server.project?.worktree, let label = worktreeTagText {
+                Tag(text: label, help: "Linked worktree \(worktree)", tint: Theme.violet, symbol: compact ? "arrow.triangle.branch" : nil)
+            }
+            if isDirectoryDeleted {
+                Tag(text: "deleted dir",
+                    help: "Working directory no longer exists on disk (\(Format.path(server.directory ?? ""))). This server is still running from a deleted folder or worktree.",
+                    tint: Theme.warning, symbol: compact ? "folder.badge.questionmark" : nil)
             }
             if let shared = server.ports.first(where: { store.sharedPorts.contains($0.port) }) {
-                Tag(text: "shared port", help: "Another server also listens on port \(shared.port). localhost:\(shared.port) may reach either one, depending on IPv4 or IPv6.",
+                let label = store.sharedPortLabel(for: server, binding: shared)
+                let address = store.host(for: server, binding: shared)
+                Tag(text: label, help: "Another server also listens on port \(shared.port). Opening uses \(address):\(shared.port) to reach this one.",
                     tint: Theme.warning, symbol: compact ? "square.on.square" : nil)
             }
             if server.isExposed && server.category == .dev {
@@ -166,6 +190,12 @@ struct ServerRow: View {
             if let subpath, let branch { return ["\(subpath) · \(branch)", branch, subpath] }
             return [subpath ?? branch].compactMap { $0 }
         case .database, .service:
+            if let container = server.containerName {
+                let name = container == server.title ? nil : container
+                let runtime = server.launcher == server.framework.name ? nil : server.launcher
+                let parts = [name, runtime].compactMap { $0 }
+                return parts.isEmpty ? [] : [parts.joined(separator: " · ")]
+            }
             return [server.detail.map { $0.hasPrefix("~") || $0.hasPrefix("/") ? Format.path(($0 as NSString).deletingLastPathComponent) : $0 }]
                 .compactMap { $0 }
         case .other:
@@ -189,10 +219,12 @@ struct ServerRow: View {
                         store.copyURL(server)
                     }
                 }
-                if server.launch != nil {
+                if server.launch != nil && !server.isContainerControlled {
                     IconButton(symbol: "arrow.clockwise", help: "Restart") { store.restart(server) }
                 }
-                IconButton(symbol: "stop.fill", help: "Stop", role: .destructive) { store.stop(server) }
+                if !server.isContainerControlled {
+                    IconButton(symbol: "stop.fill", help: "Stop", role: .destructive) { store.stop(server) }
+                }
                 IconButton(symbol: "chevron.down", help: isExpanded ? "Hide details" : "Show details") { onToggleDetails() }
                     .rotationEffect(.degrees(isExpanded ? 180 : 0))
             }
@@ -223,7 +255,8 @@ struct ServerRow: View {
 
     private var lightHelp: String {
         switch light {
-        case .up: "Running"
+        case .up:
+            store.settings.skippedHTTPChecks.contains(server.httpCheckKey) ? "Running (HTTP check skipped)" : "Running"
         case .busy: "Busy: using \(Format.cpu(server.cpu)) CPU"
         case .waiting: "Listening, waiting for its first response"
         case .silent: "Listening, but not answering HTTP requests"
@@ -253,13 +286,15 @@ private struct ServerAccessibilityActions: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .accessibilityAction(named: "Stop") { store.stop(server) }
             .accessibilityAction(named: isExpanded ? "Hide details" : "Show details", onToggleDetails)
+            .modifier(OptionalAction(enabled: !server.isContainerControlled, name: "Stop") {
+                store.stop(server)
+            })
             .modifier(OptionalAction(enabled: server.localURL != nil,
                                      name: server.framework.urlScheme == nil ? "Copy URL" : "Copy connection URL") {
                 store.copyURL(server)
             })
-            .modifier(OptionalAction(enabled: server.launch != nil, name: "Restart") {
+            .modifier(OptionalAction(enabled: server.launch != nil && !server.isContainerControlled, name: "Restart") {
                 store.restart(server)
             })
     }
@@ -310,7 +345,7 @@ struct ServerMenu: View {
     let onClose: () -> Void
 
     var body: some View {
-        if server.category == .dev && server.framework.speaksHTTP {
+        if server.opensInBrowser {
             Button("Open in Browser") { store.open(server); onClose() }
         }
         if let url = store.url(for: server) {
@@ -318,6 +353,12 @@ struct ServerMenu: View {
         }
         if let network = store.networkURL(for: server) {
             Button("Copy Network URL") { store.copy(network.absoluteString) }
+        }
+        if server.category == .dev && server.framework.speaksHTTP {
+            let skipped = store.settings.skippedHTTPChecks.contains(server.httpCheckKey)
+            Divider()
+            Button("Re-check Status") { store.reprobe(server) }
+            Button(skipped ? "Check HTTP Status" : "Skip HTTP Check") { store.toggleSkipHTTP(server) }
         }
         Divider()
         if server.directory != nil || server.project != nil {
@@ -332,12 +373,22 @@ struct ServerMenu: View {
         if store.logURL(for: server) != nil {
             Button("Show Logs") { onShowLogs(server) }
         }
-        Divider()
-        if server.launch != nil {
-            Button("Restart") { store.restart(server) }
+        if !server.isContainerControlled {
+            Divider()
+            if server.launch != nil {
+                Button("Restart") { store.restart(server) }
+            }
+            Button("Stop") { store.stop(server) }
+            if let shared = server.ports.first(where: { store.sharedPorts.contains($0.port) }) {
+                let others = store.otherServers(sharingPort: shared.port, with: server).filter { !$0.isContainerControlled }
+                if !others.isEmpty {
+                    Button("Stop Other on :\(shared.port)") {
+                        for other in others { store.stop(other) }
+                    }
+                }
+            }
+            Button("Force Quit") { store.forceQuit(server) }
         }
-        Button("Stop") { store.stop(server) }
-        Button("Force Quit") { store.forceQuit(server) }
         Divider()
         Button("Copy Command") { store.copy(server.copyableCommand, label: "command") }
         Button("Copy PID \(server.pid)") { store.copy("\(server.pid)") }

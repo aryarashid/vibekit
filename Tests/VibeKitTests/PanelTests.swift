@@ -1,6 +1,7 @@
 import AppKit
 import XCTest
 @testable import VibeKit
+import VibeKitCore
 
 @MainActor
 final class PanelTests: XCTestCase {
@@ -268,6 +269,130 @@ final class PanelTests: XCTestCase {
         XCTAssertTrue(controller.isVisible)
         controller.handleGlobalMouseDown(at: NSPoint(x: hitRect.minX - 40, y: hitRect.midY))
         XCTAssertFalse(controller.isVisible, "Clicking outside the status button must close the panel")
+    }
+
+    func testToggleForwardsQueryIntoSearchField() throws {
+        let (controller, _, name) = fixture()
+        defer { UserDefaults.standard.removePersistentDomain(forName: name) }
+        defer { controller.close() }
+
+        controller.toggle(from: nil, tab: .servers, query: "5173")
+        pump(0.15)
+        let panel = try XCTUnwrap(NSApp.windows.compactMap { $0 as? Panel }.first { $0.isVisible })
+        let host = try XCTUnwrap(panel.contentView?.subviews.first)
+        func searchField(in view: NSView) -> NSTextField? {
+            if let field = view as? NSTextField, field.isEditable { return field }
+            return view.subviews.lazy.compactMap { searchField(in: $0) }.first
+        }
+        let field = try XCTUnwrap(searchField(in: host))
+        XCTAssertEqual(field.stringValue, "5173")
+    }
+
+    func testPromptContextPrefersFailingThenMostRecentDevServer() {
+        let name = "VibeKitTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let store = ServerStore(settings: Settings(defaults: defaults))
+
+        let now = Date()
+        let older = Server(
+            id: "older", pid: 1, rootPid: 1, listenerPids: [1], startDate: now.addingTimeInterval(-600),
+            ports: [PortBinding(port: 3000, address: "127.0.0.1", isIPv6: false)], framework: .next,
+            project: Project(name: "alpha", root: "/tmp/alpha", subpath: nil, branch: "main", worktree: nil),
+            processName: "node", executable: "/usr/bin/node", command: "next dev", directory: "/tmp/alpha", launch: nil
+        )
+        let newer = Server(
+            id: "newer", pid: 2, rootPid: 2, listenerPids: [2], startDate: now.addingTimeInterval(-30),
+            ports: [PortBinding(port: 5173, address: "127.0.0.1", isIPv6: false)], framework: .vite,
+            project: Project(name: "beta", root: "/tmp/beta", subpath: nil, branch: "feat/ui", worktree: nil),
+            processName: "node", executable: "/usr/bin/node", command: "vite", directory: "/tmp/beta", launch: nil
+        )
+
+        store.showDemo(servers: [older, newer], pages: ["older": PageInfo(status: 200, title: "Alpha"), "newer": PageInfo(status: 200, title: "Beta")], history: [:], recents: [])
+        let normalCtx = store.promptContext(clipboard: "hello")
+        XCTAssertEqual(normalCtx.project, "beta")
+        XCTAssertEqual(normalCtx.port, "5173")
+        XCTAssertEqual(normalCtx.branch, "feat/ui")
+        XCTAssertEqual(normalCtx.url, "http://localhost:5173")
+        XCTAssertEqual(normalCtx.clipboard, "hello")
+
+        // When an older server is failing (500), it takes priority.
+        store.showDemo(servers: [older, newer], pages: ["older": PageInfo(status: 500, title: "Error"), "newer": PageInfo(status: 200, title: "Beta")], history: [:], recents: [])
+        let failingCtx = store.promptContext(clipboard: nil)
+        XCTAssertEqual(failingCtx.project, "alpha")
+        XCTAssertEqual(failingCtx.port, "3000")
+    }
+
+    func testSkipHTTPCheckSharedPortsUnreadCrashesAndLogPruning() throws {
+        let name = "VibeKitTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        defer {
+            defaults.removePersistentDomain(forName: name)
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        let store = ServerStore(settings: Settings(defaults: defaults), persistenceDirectory: tempDir, logsDirectory: tempDir)
+        let now = Date()
+        let v4 = Server(
+            id: "v4", pid: 10, rootPid: 10, listenerPids: [10], startDate: now,
+            ports: [PortBinding(port: 3000, address: "127.0.0.1", isIPv6: false)], framework: .vite,
+            project: Project(name: "web", root: "/tmp/web", subpath: nil, branch: "main", worktree: nil),
+            processName: "node", executable: "/usr/bin/node", command: "vite", directory: "/tmp/web", launch: nil
+        )
+        let v6 = Server(
+            id: "v6", pid: 11, rootPid: 11, listenerPids: [11], startDate: now,
+            ports: [PortBinding(port: 3000, address: "::1", isIPv6: true, acceptsIPv4: false)], framework: .next,
+            project: Project(name: "api", root: "/tmp/api", subpath: nil, branch: "main", worktree: nil),
+            processName: "node", executable: "/usr/bin/node", command: "next dev", directory: "/tmp/api", launch: nil
+        )
+        store.showDemo(servers: [v4, v6], pages: [:], history: [:], recents: [])
+
+        // Shared port disambiguation & explicit loopback URLs.
+        XCTAssertTrue(store.sharedPorts.contains(3000))
+        XCTAssertEqual(store.sharedPortLabel(for: v4, binding: v4.ports[0]), "shared · IPv4")
+        XCTAssertEqual(store.sharedPortLabel(for: v6, binding: v6.ports[0]), "shared · IPv6")
+        XCTAssertEqual(store.url(for: v4)?.absoluteString, "http://127.0.0.1:3000")
+        XCTAssertEqual(store.url(for: v6)?.absoluteString, "http://[::1]:3000")
+        XCTAssertEqual(store.otherServers(sharingPort: 3000, with: v4).map(\.id), ["v6"])
+
+        // Skip HTTP check turns a waiting dev server immediately up.
+        XCTAssertEqual(store.light(for: v4), .waiting)
+        store.toggleSkipHTTP(v4)
+        XCTAssertEqual(store.light(for: v4), .up)
+        store.toggleSkipHTTP(v4)
+        XCTAssertEqual(store.light(for: v4), .waiting)
+
+        // Unread crashes accumulate while closed and clear with a toast on panel open.
+        store.recordCrash(title: "worker", code: 1)
+        XCTAssertEqual(store.unreadCrashes, 1)
+        store.isPanelOpen = true
+        XCTAssertEqual(store.unreadCrashes, 0)
+        XCTAssertEqual(store.toast?.isError, true)
+        XCTAssertTrue(store.toast?.message.contains("worker") == true)
+        store.isPanelOpen = false
+
+        // Log pruning: keeps newest 50, drops >30d old unless protected, ignores non-.log files.
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let protectedOld = tempDir.appendingPathComponent("protected-old.log")
+        let expiredOld = tempDir.appendingPathComponent("expired-old.log")
+        let noteFile = tempDir.appendingPathComponent("README.txt")
+        let oldDate = now.addingTimeInterval(-40 * 86_400)
+        for url in [protectedOld, expiredOld, noteFile] {
+            try Data("x".utf8).write(to: url)
+            try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: url.path)
+        }
+        for i in 0..<55 {
+            let file = tempDir.appendingPathComponent("recent-\(i).log")
+            try Data("log".utf8).write(to: file)
+            try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(Double(-i * 60))], ofItemAtPath: file.path)
+        }
+        ServerStore.pruneLogs(in: tempDir, keep: [protectedOld], maxCount: 50, maxAge: 30 * 86_400, now: now)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: protectedOld.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: expiredOld.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: noteFile.path))
+        let remainingLogs = try FileManager.default.contentsOfDirectory(at: tempDir, includingPropertiesForKeys: nil).filter { $0.pathExtension == "log" }
+        // 50 newest + 1 protected old log.
+        XCTAssertEqual(remainingLogs.count, 51)
     }
 
     private func pump(_ seconds: TimeInterval) {

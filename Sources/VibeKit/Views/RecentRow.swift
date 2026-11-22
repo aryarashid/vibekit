@@ -43,9 +43,19 @@ struct RecentRow: View {
                         .fontWeight(.medium)
                     Text("·").foregroundStyle(Theme.readout)
                     if isSelected, let crashCode {
-                        Text("Exit \(crashCode)")
-                            .monospacedDigit()
-                            .foregroundStyle(Theme.danger)
+                        if let log = availableLog {
+                            Button { onShowLogs(log) } label: {
+                                Text("Exit \(crashCode)")
+                                    .monospacedDigit()
+                                    .foregroundStyle(Theme.danger)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Click to open crash log")
+                        } else {
+                            Text("Exit \(crashCode)")
+                                .monospacedDigit()
+                                .foregroundStyle(Theme.danger)
+                        }
                     } else {
                         Text(recent.launch.displayCommandShort)
                             .font(Theme.monoSmall)
@@ -72,7 +82,7 @@ struct RecentRow: View {
                     IconButton(symbol: "xmark", help: "Remove from list") { store.forget(recent) }
                 }
             } else if let crashCode {
-                Text("Crashed · exit \(crashCode)")
+                let pill = Text("Crashed · exit \(crashCode)")
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(Theme.danger)
                     .monospacedDigit()
@@ -80,7 +90,14 @@ struct RecentRow: View {
                     .padding(.vertical, 2)
                     .background(Capsule().fill(Theme.danger.opacity(0.07)))
                     .fixedSize()
-                    .help("Ended with exit code \(crashCode) \(Format.ago(recent.stoppedAt)).")
+                if let log = availableLog {
+                    Button { onShowLogs(log) } label: { pill }
+                        .buttonStyle(.plain)
+                        .help("Ended with exit code \(crashCode) \(Format.ago(recent.stoppedAt)). Click to open log.")
+                } else {
+                    pill
+                        .help("Ended with exit code \(crashCode) \(Format.ago(recent.stoppedAt)).")
+                }
             } else {
                 Text((recent.reason == .exited ? "exited " : "") + Format.ago(recent.stoppedAt))
                     .font(.system(size: 10.5)).monospacedDigit()

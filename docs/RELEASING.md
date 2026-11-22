@@ -42,6 +42,9 @@ The workflow needs these repository secrets:
 
 ```sh
 scripts/setup-release-secrets.sh --sparkle                                   # once, ever
+scripts/setup-release-secrets.sh --create-csr                                # make a new 5-year Developer ID cert
+scripts/setup-release-secrets.sh --install-cer ~/Downloads/developerID_application.cer
+# Or if you already exported a .p12 from Keychain Access:
 scripts/setup-release-secrets.sh --developer-id ~/Desktop/DeveloperID.p12
 scripts/setup-release-secrets.sh --notary ~/keys/AuthKey_ABC123.p8 ABC123 [ISSUER_ID]
 scripts/setup-release-secrets.sh --check
