@@ -111,7 +111,10 @@ struct PromptListPage: View {
                     if !query.isEmpty { query = "" } else { close() }
                     return .handled
                 }
-                .onChange(of: query) { _, _ in selection = nil }
+                .onChange(of: query) { _, _ in
+                    selection = nil
+                    hoverLock = NSEvent.mouseLocation
+                }
             if !query.isEmpty {
                 IconButton(symbol: "xmark.circle.fill", help: "Clear search", size: 22) { query = "" }
             }

@@ -145,8 +145,9 @@ struct ServerListPage: View {
     @State private var expanded: String?
     @State private var confirmStopAll = false
     @State private var stopAllResetTask: Task<Void, Never>?
-    /// Where the pointer was when the keyboard last moved the selection. Rows that scroll or expand under a still
-    /// pointer must not take the selection, or a shortcut would act on a server you did not pick.
+    /// Where the pointer was when the keyboard last moved the selection or changed the search. Rows that scroll,
+    /// expand or filter under a still pointer must not take the selection, or a shortcut would act on a server
+    /// you did not pick.
     @State private var hoverLock: NSPoint?
     /// Whether the port typed in the search is free. Worked out when the query changes, not on every redraw.
     @State private var portCheck: (port: UInt16, free: Bool)?
@@ -224,6 +225,7 @@ struct ServerListPage: View {
                 .onKeyPress(.tab) { tab = .prompts; return .handled }
                 .onChange(of: query) { _, _ in
                     selection = nil
+                    hoverLock = NSEvent.mouseLocation
                     expanded = nil
                     portCheck = queriedPort.map { ($0, Network.isPortFree($0)) }
                 }

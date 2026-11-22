@@ -173,17 +173,32 @@ final class PanelTests: XCTestCase {
     }
 
     func testEditShortcutsWorkInsideThePanel() throws {
-        let pasteboard = NSPasteboard.general
-        let savedClipboard = pasteboard.string(forType: .string)
-        defer {
-            pasteboard.clearContents()
-            if let savedClipboard { pasteboard.setString(savedClipboard, forType: .string) }
-        }
-
         let (controller, store, name) = fixture()
         defer { UserDefaults.standard.removePersistentDomain(forName: name) }
         controller.show(from: nil, tab: .servers)
+        defer { controller.close() }
         let panel = try XCTUnwrap(NSApp.windows.compactMap { $0 as? Panel }.first { $0.isVisible })
+        // Edit actions go to the key window. A test run started while you use another app may never
+        // get key focus, so skip there rather than fail. CI has no such user and must not skip.
+        let keyDeadline = Date().addingTimeInterval(3)
+        while !panel.isKeyWindow && Date() < keyDeadline { pump(0.01) }
+        if !panel.isKeyWindow {
+            let message = "The panel never became the key window, so edit shortcuts cannot reach it"
+            if ProcessInfo.processInfo.environment["CI"] != nil { XCTFail(message); return }
+            throw XCTSkip(message + ". Run this test while the Mac is idle.")
+        }
+
+        // Keep the whole clipboard, not just its text, and put it back after.
+        let pasteboard = NSPasteboard.general
+        let savedClipboard = (pasteboard.pasteboardItems ?? []).map { item in
+            let copy = NSPasteboardItem()
+            for type in item.types { if let data = item.data(forType: type) { copy.setData(data, forType: type) } }
+            return copy
+        }
+        defer {
+            pasteboard.clearContents()
+            if !savedClipboard.isEmpty { pasteboard.writeObjects(savedClipboard) }
+        }
         // Wait for the full demo list to render and focus the search field before filtering;
         // otherwise the initial 200pt height would satisfy the `< 300` check before the filter runs.
         let openDeadline = Date().addingTimeInterval(3)
@@ -206,10 +221,12 @@ final class PanelTests: XCTestCase {
         XCTAssertTrue(panel.performKeyEquivalent(with: key("c", keyCode: 8, flags: .command)))
         XCTAssertEqual(pasteboard.string(forType: .string), "3000")
 
-        // ⇧⌘C still reaches the server's Copy URL shortcut instead of Edit › Copy.
+        // ⇧⌘C still reaches the server's Copy URL shortcut instead of Edit › Copy. "3000" also matches a
+        // recent server on 3001, and the filtered rows move under the still pointer, which must not select one.
         XCTAssertTrue(panel.performKeyEquivalent(with: key("c", unmodified: "C", keyCode: 8, flags: [.command, .shift])))
-        XCTAssertEqual(pasteboard.string(forType: .string), "http://localhost:3000")
-        XCTAssertEqual(store.toast?.message, "Copied http://localhost:3000")
+        let state = "pointer \(NSEvent.mouseLocation), panel \(panel.frame), key \(panel.isKeyWindow), query \(editor.string)"
+        XCTAssertEqual(pasteboard.string(forType: .string), "http://localhost:3000", state)
+        XCTAssertEqual(store.toast?.message, "Copied http://localhost:3000", state)
 
         pasteboard.clearContents()
         pasteboard.setString("5173", forType: .string)
@@ -218,7 +235,6 @@ final class PanelTests: XCTestCase {
 
         XCTAssertTrue(panel.performKeyEquivalent(with: key("z", keyCode: 6, flags: .command)))
         XCTAssertEqual(editor.string, "3000")
-        controller.close()
     }
 
     func testClickingTheStatusButtonClosesInsteadOfClosingAndReopening() throws {
