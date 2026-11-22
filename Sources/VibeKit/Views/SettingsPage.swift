@@ -36,6 +36,9 @@ struct SettingsPage: View {
                             .padding(.vertical, 4)
                         }
                     }
+                    if LidSleep.isSupported {
+                        group("Lid") { lidSleepRows }
+                    }
                     group("Prompts") {
                         toggle("Paste into the app in front when you pick a prompt", isOn: Binding(
                             get: { settings.pasteOnUse },
@@ -108,7 +111,78 @@ struct SettingsPage: View {
         }
         .onAppear {
             settings.refreshLaunchAtLogin()
+            settings.refreshLidStayAwake()
             pasteAccess = PromptStore.canPaste
+        }
+    }
+
+    @ViewBuilder private var lidSleepRows: some View {
+        toggle("Stay awake after closing the lid", isOn: Binding(
+            get: { settings.lidStayAwake },
+            set: { on in Task { await settings.setLidStayAwake(on) } }))
+            .disabled(settings.lidHelperBusy)
+        HStack {
+            Text("Then sleep after").font(.system(size: 12.5))
+            Spacer()
+            Picker("Then sleep after", selection: Binding(get: { settings.lidSleepMinutes }, set: { settings.setLidSleepMinutes($0) })) {
+                ForEach(LidSleep.choices, id: \.self) { minutes in
+                    Text(minutes == 60 ? "1 hour" : "\(minutes) minutes").tag(minutes)
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+            .controlSize(.small)
+            .disabled(settings.lidHelperBusy)
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 30)
+        Group {
+            if let error = settings.lidHelperError {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    lidNotice(error, warning: true)
+                    Spacer(minLength: 0)
+                    // The way out of a helper that cannot be switched off.
+                    if settings.lidHelperInstalled { removeButton }
+                }
+            } else if settings.lidHelperBusy {
+                lidNotice("Installing the helper…")
+            } else if settings.lidHelperPaused {
+                lidNotice("Paused. The helper was set up for another copy of Vibe Kit, or has stopped. Switch this on to set it up again.", warning: true)
+            } else if settings.lidStayAwake {
+                lidNotice("The screen turns off when the lid closes, but agents keep working until the time is up, then the Mac sleeps. It sleeps right away at 15% battery or less, and never on its own while docked to a display. While this is on, the Mac also won't go to sleep by itself with the lid open.")
+            } else if settings.lidHelperInstalled {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("Off. The helper is installed but does nothing.")
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    removeButton
+                }
+            } else {
+                lidNotice("Turning this on installs a small helper and asks for your password once.")
+            }
+        }
+        .font(Theme.metaFont)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
+    }
+
+    private var removeButton: some View {
+        Button("Remove") { Task { await settings.removeLidHelper() } }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.violet)
+            .fontWeight(.semibold)
+            .disabled(settings.lidHelperBusy)
+    }
+
+    private func lidNotice(_ text: String, warning: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            if warning {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning)
+            }
+            Text(text)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
