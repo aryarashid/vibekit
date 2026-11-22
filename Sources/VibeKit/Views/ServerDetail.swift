@@ -64,23 +64,37 @@ struct ServerDetail: View {
             line("terminal", server.command, mono: true, lines: 3) {
                 IconButton(symbol: "doc.on.doc", help: "Copy command", size: 22) { store.copy(server.copyableCommand, label: "command") }
             }
+            if let container = server.containerName {
+                let label = server.launcher.map { "\(container) · \($0)" } ?? container
+                line("shippingbox", label) { EmptyView() }
+            } else if let launcher = server.launcher {
+                line("arrow.turn.down.right", "Started by \(launcher)") { EmptyView() }
+            }
             line("cpu", processSummary) { EmptyView() }
 
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 6) {
-                    projectActions
-                    Spacer(minLength: 6)
-                    forceQuit
+            if hasBottomActions {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) {
+                        projectActions
+                        Spacer(minLength: 6)
+                        if server.containerName == nil { forceQuit }
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 6) { projectActions }
+                        if server.containerName == nil { forceQuit }
+                    }
                 }
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) { projectActions }
-                    forceQuit
-                }
+                .padding(.top, 4)
             }
-            .padding(.top, 4)
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 10)
+    }
+
+    private var hasBottomActions: Bool {
+        server.containerName == nil
+            || (folder != nil && (editor != nil || terminal != nil))
+            || store.logURL(for: server) != nil
     }
 
     private var forceQuit: some View {
@@ -127,7 +141,8 @@ struct ServerDetail: View {
     @ViewBuilder
     private func portChip(_ binding: PortBinding) -> some View {
         let targetURL = store.url(for: server, binding: binding)
-        let helpText: String = if server.opensInBrowser, let targetURL {
+        let opens = server.category != .other && (targetURL?.scheme == "http" || targetURL?.scheme == "https")
+        let helpText: String = if opens, let targetURL {
             "Open \(targetURL.absoluteString)"
         } else if let targetURL {
             "Copy \(targetURL.absoluteString)"
@@ -135,7 +150,7 @@ struct ServerDetail: View {
             "Copy port \(binding.port)"
         }
         Button {
-            if server.opensInBrowser {
+            if opens {
                 store.open(server, binding: binding)
                 onClose()
             } else if let targetURL {
@@ -155,7 +170,7 @@ struct ServerDetail: View {
     }
 
     private var processSummary: String {
-        var parts = ["PID \(server.pid)"]
+        var parts = [server.containerName != nil ? "Runtime PID \(server.pid)" : "PID \(server.pid)"]
         if server.processCount > 1 { parts.append("\(server.processCount) processes") }
         if server.memory > 0 { parts.append(Format.memory(server.memory)) }
         return parts.joined(separator: " · ")

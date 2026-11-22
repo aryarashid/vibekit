@@ -13,7 +13,7 @@ enum DemoData {
 
         func add(_ id: String, port: UInt16, address: String = "127.0.0.1", framework: Framework, project: String?,
                  subpath: String? = nil, branch: String? = "main", worktree: String? = nil, name: String? = nil,
-                 command: String, age: TimeInterval, cpu: Double, memoryMB: UInt64, processes: Int = 2,
+                 launcher: String? = nil, command: String, age: TimeInterval, cpu: Double, memoryMB: UInt64, processes: Int = 2,
                  page: PageInfo? = nil, trace: [Double]) {
             let root = project.map { "\(home)/code/\($0)" }
             let directory = root.map { root in subpath.map { "\(root)/\($0)" } ?? root }
@@ -28,7 +28,7 @@ enum DemoData {
                 framework: framework,
                 project: project.map { Project(name: $0, root: root!, subpath: subpath, branch: branch, worktree: worktree) },
                 processName: name ?? framework.name, executable: "/opt/homebrew/bin/node", command: command,
-                directory: directory, launch: framework.category == .dev ? launch : nil)
+                directory: directory, launch: framework.category == .dev ? launch : nil, launcher: launcher)
             server.cpu = cpu
             server.memory = memoryMB * 1_048_576
             server.processCount = processes
@@ -37,18 +37,19 @@ enum DemoData {
             history[id] = trace
         }
 
-        add("api", port: 8000, address: "0.0.0.0", framework: .fastAPI, project: "api", command: "uvicorn app.main:app --reload --host 0.0.0.0",
+        add("api", port: 8000, address: "0.0.0.0", framework: .fastAPI, project: "api", launcher: "Claude Code",
+            command: "uvicorn app.main:app --reload --host 0.0.0.0",
             age: 5 * 3600 + 120, cpu: 1.6, memoryMB: 96, page: PageInfo(status: 404, title: nil),
             trace: wave(base: 1.2, amplitude: 0.8, seed: 1))
         add("ds-vite", port: 5173, framework: .vite, project: "design-system", subpath: "packages/ui", branch: "feat/tokens",
-            worktree: "design-system-tokens", command: "vite --port 5173", age: 38 * 60, cpu: 0.6, memoryMB: 182,
+            worktree: "design-system-tokens", launcher: "Claude Code", command: "vite --port 5173", age: 38 * 60, cpu: 0.6, memoryMB: 182,
             page: PageInfo(status: 200, title: "Design System"), trace: wave(base: 0.5, amplitude: 0.5, seed: 2))
         add("ds-storybook", port: 6006, framework: .storybook, project: "design-system", branch: "feat/tokens",
             command: "storybook dev -p 6006", age: 38 * 60, cpu: 0.3, memoryMB: 241, processes: 3,
             page: PageInfo(status: 200, title: "Storybook"), trace: wave(base: 0.3, amplitude: 0.3, seed: 3))
         add("docs", port: 4321, framework: .astro, project: "docs", command: "astro dev", age: 7, cpu: 24, memoryMB: 133,
             trace: [0, 3, 18, 31, 24])
-        add("storefront", port: 3000, framework: .next, project: "storefront", command: "next dev --turbopack",
+        add("storefront", port: 3000, framework: .next, project: "storefront", launcher: "Claude Code", command: "next dev --turbopack",
             age: 2 * 3600 + 14 * 60, cpu: 46, memoryMB: 1240, processes: 5, page: PageInfo(status: 200, title: "Storefront"),
             trace: Array(wave(base: 2, amplitude: 1.5, seed: 4).dropLast(8)) + [6, 14, 28, 39, 52, 61, 49, 46])
         add("postgres", port: 5432, framework: .postgres, project: nil, branch: nil, name: "Homebrew",

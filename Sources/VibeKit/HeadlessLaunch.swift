@@ -72,6 +72,9 @@ enum HeadlessLaunch {
 
     /// A second CLI that resolved the same old PID must not launch another copy after the first stopped it.
     static func stop(_ server: Server, support: URL, afterStop: () throws -> Void = {}) async throws {
+        if let container = server.containerName {
+            throw CLIError("\(server.title) runs inside container '\(container)'. Stop or restart it with docker or orb instead.")
+        }
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         let lockFile = support.appendingPathComponent(".control-\(server.id).lock")
         let fd = open(lockFile.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)

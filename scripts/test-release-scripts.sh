@@ -82,5 +82,50 @@ assert item.find("description").get("{%s}descriptionFormat" % ns["sparkle"]) == 
 EOF
 then echo "ok   appcast parses"; else echo "FAIL appcast"; fails=$((fails + 1)); fi
 
+# Exercise --create-csr and --install-cer offline with a self-signed DER certificate.
+csr_dir="$tmp/csr"
+if VIBEKIT_CSR_DIR="$csr_dir" scripts/setup-release-secrets.sh --create-csr >/dev/null \
+  && [[ -f "$csr_dir/devid.key" && -f "$csr_dir/VibeKit-DeveloperID.certSigningRequest" ]]; then
+  echo "ok   --create-csr generates key and CSR"
+else
+  echo "FAIL --create-csr"
+  fails=$((fails + 1))
+fi
+
+# Refuses to overwrite an existing key without --force.
+if ! VIBEKIT_CSR_DIR="$csr_dir" scripts/setup-release-secrets.sh --create-csr >/dev/null 2>&1; then
+  echo "ok   --create-csr refuses overwrite without --force"
+else
+  echo "FAIL --create-csr overwrote existing key"
+  fails=$((fails + 1))
+fi
+
+# Rejects a certificate with the wrong subject before importing or deleting the key.
+/usr/bin/openssl req -new -x509 -key "$csr_dir/devid.key" \
+  -subj "/CN=Apple Development: Test/OU=TEST123456" -days 1 -outform DER -out "$tmp/wrong-type.cer" 2>/dev/null
+if ! VIBEKIT_CSR_DIR="$csr_dir" SKIP_KEYCHAIN_IMPORT=1 SKIP_GH_UPLOAD=1 \
+  scripts/setup-release-secrets.sh --install-cer "$tmp/wrong-type.cer" >/dev/null 2>&1 \
+  && [[ -f "$csr_dir/devid.key" ]]; then
+  echo "ok   --install-cer rejects non-Developer-ID certificate"
+else
+  echo "FAIL --install-cer accepted wrong certificate type"
+  fails=$((fails + 1))
+fi
+
+# Accepts a matching DER Developer ID Application cert, verifies .p12 in macOS keychain, and removes key dir.
+printf 'basicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=codeSigning\n' > "$tmp/codesign.ext"
+/usr/bin/openssl req -new -key "$csr_dir/devid.key" \
+  -subj "/CN=Developer ID Application: Test User (TEST123456)/OU=TEST123456" -out "$tmp/devid.csr" 2>/dev/null
+/usr/bin/openssl x509 -req -in "$tmp/devid.csr" -signkey "$csr_dir/devid.key" \
+  -extfile "$tmp/codesign.ext" -days 1 -outform DER -out "$tmp/devid.cer" 2>/dev/null
+if VIBEKIT_CSR_DIR="$csr_dir" SKIP_KEYCHAIN_IMPORT=1 SKIP_GH_UPLOAD=1 \
+  scripts/setup-release-secrets.sh --install-cer "$tmp/devid.cer" >/dev/null \
+  && [[ ! -e "$csr_dir" ]]; then
+  echo "ok   --install-cer verifies .p12 and cleans up key"
+else
+  echo "FAIL --install-cer"
+  fails=$((fails + 1))
+fi
+
 (( fails == 0 )) || { echo "$fails failed"; exit 1; }
 echo "All release script checks passed"

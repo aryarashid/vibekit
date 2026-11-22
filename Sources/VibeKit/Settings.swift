@@ -168,19 +168,9 @@ final class Settings {
         if lidHelperInstalled != (state != .missing) { lidHelperInstalled = state != .missing }
         if lidHelperPaused != flags.paused { lidHelperPaused = flags.paused }
         if lidHelperOutdatedActive != flags.outdatedActive { lidHelperOutdatedActive = flags.outdatedActive }
-        // Settings has no row of its own for this yet, so say it where problems are shown.
-        // A real error stays until the next change.
-        if flags.outdatedActive, lidHelperError == nil {
-            lidHelperError = Self.outdatedHelperNotice
-        } else if !flags.outdatedActive, lidHelperError == Self.outdatedHelperNotice {
-            lidHelperError = nil
-        }
         // Show the delay the helper actually uses, in case the file was changed by hand.
         if flags.on && minutes != lidSleepMinutes { lidSleepMinutes = minutes }
     }
-
-    nonisolated static let outdatedHelperNotice =
-        "This is on, but it is using the helper from an earlier version of Vibe Kit. Switch it off and on again to update the helper."
 
     /// What Settings should say about the helper.
     ///

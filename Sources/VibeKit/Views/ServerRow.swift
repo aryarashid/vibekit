@@ -66,8 +66,8 @@ struct ServerRow: View {
     }
 
     private var isDirectoryDeleted: Bool {
-        guard !store.isDemo, server.category == .dev, let dir = server.directory else { return false }
-        return !FileManager.default.fileExists(atPath: dir)
+        guard !store.isDemo, server.category == .dev else { return false }
+        return !server.directoryExists
     }
 
     private var worktreeTagText: String? {
@@ -190,6 +190,12 @@ struct ServerRow: View {
             if let subpath, let branch { return ["\(subpath) · \(branch)", branch, subpath] }
             return [subpath ?? branch].compactMap { $0 }
         case .database, .service:
+            if let container = server.containerName {
+                let name = container == server.title ? nil : container
+                let runtime = server.launcher == server.framework.name ? nil : server.launcher
+                let parts = [name, runtime].compactMap { $0 }
+                return parts.isEmpty ? [] : [parts.joined(separator: " · ")]
+            }
             return [server.detail.map { $0.hasPrefix("~") || $0.hasPrefix("/") ? Format.path(($0 as NSString).deletingLastPathComponent) : $0 }]
                 .compactMap { $0 }
         case .other:
@@ -213,10 +219,12 @@ struct ServerRow: View {
                         store.copyURL(server)
                     }
                 }
-                if server.launch != nil {
+                if server.launch != nil && server.containerName == nil {
                     IconButton(symbol: "arrow.clockwise", help: "Restart") { store.restart(server) }
                 }
-                IconButton(symbol: "stop.fill", help: "Stop", role: .destructive) { store.stop(server) }
+                if server.containerName == nil {
+                    IconButton(symbol: "stop.fill", help: "Stop", role: .destructive) { store.stop(server) }
+                }
                 IconButton(symbol: "chevron.down", help: isExpanded ? "Hide details" : "Show details") { onToggleDetails() }
                     .rotationEffect(.degrees(isExpanded ? 180 : 0))
             }
@@ -278,13 +286,15 @@ private struct ServerAccessibilityActions: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .accessibilityAction(named: "Stop") { store.stop(server) }
             .accessibilityAction(named: isExpanded ? "Hide details" : "Show details", onToggleDetails)
+            .modifier(OptionalAction(enabled: server.containerName == nil, name: "Stop") {
+                store.stop(server)
+            })
             .modifier(OptionalAction(enabled: server.localURL != nil,
                                      name: server.framework.urlScheme == nil ? "Copy URL" : "Copy connection URL") {
                 store.copyURL(server)
             })
-            .modifier(OptionalAction(enabled: server.launch != nil, name: "Restart") {
+            .modifier(OptionalAction(enabled: server.launch != nil && server.containerName == nil, name: "Restart") {
                 store.restart(server)
             })
     }
@@ -363,20 +373,22 @@ struct ServerMenu: View {
         if store.logURL(for: server) != nil {
             Button("Show Logs") { onShowLogs(server) }
         }
-        Divider()
-        if server.launch != nil {
-            Button("Restart") { store.restart(server) }
-        }
-        Button("Stop") { store.stop(server) }
-        if let shared = server.ports.first(where: { store.sharedPorts.contains($0.port) }) {
-            let others = store.otherServers(sharingPort: shared.port, with: server)
-            if !others.isEmpty {
-                Button("Stop Other on :\(shared.port)") {
-                    for other in others { store.stop(other) }
+        if server.containerName == nil {
+            Divider()
+            if server.launch != nil {
+                Button("Restart") { store.restart(server) }
+            }
+            Button("Stop") { store.stop(server) }
+            if let shared = server.ports.first(where: { store.sharedPorts.contains($0.port) }) {
+                let others = store.otherServers(sharingPort: shared.port, with: server).filter { $0.containerName == nil }
+                if !others.isEmpty {
+                    Button("Stop Other on :\(shared.port)") {
+                        for other in others { store.stop(other) }
+                    }
                 }
             }
+            Button("Force Quit") { store.forceQuit(server) }
         }
-        Button("Force Quit") { store.forceQuit(server) }
         Divider()
         Button("Copy Command") { store.copy(server.copyableCommand, label: "command") }
         Button("Copy PID \(server.pid)") { store.copy("\(server.pid)") }

@@ -315,6 +315,8 @@ struct LidSleepIndicator: View {
                                      hoverInk: paused ? Theme.warning : .primary,
                                      tint: paused ? Theme.warning : .primary))
         .help(paused ? "Lid sleep helper is paused. Click to open Settings."
+                     : settings.lidHelperOutdatedActive
+                     ? "Staying awake for \(settings.lidSleepMinutes)m after lid close (helper update available)"
                      : "Staying awake for \(settings.lidSleepMinutes)m after lid close")
         .accessibilityLabel(paused ? "Lid sleep helper paused"
                                    : "Staying awake for \(settings.lidSleepMinutes) minutes after lid close")

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import VibeKitCore
 
@@ -17,6 +18,7 @@ struct ListCommand {
     var logs = ServerStore.logsDirectory
     var scan: @Sendable (Bool, Bool) -> [Server] = Self.scanServers
     var isFree: @Sendable (UInt16) -> Bool = Network.isPortFree
+    var clipboard: @Sendable () -> String? = { NSPasteboard.general.string(forType: .string) }
 
     private static func scanServers(all: Bool, cpu: Bool) -> [Server] {
         let scanner = PortScanner()
@@ -26,7 +28,7 @@ struct ListCommand {
             _ = scanner.scan(usageFor: categories)
             Thread.sleep(forTimeInterval: 0.3)
         }
-        return scanner.scan(usageFor: categories, fullSweep: true)
+        return ContainerResolver.resolve(servers: scanner.scan(usageFor: categories, fullSweep: true))
             .filter { categories.contains($0.category) }
             .sorted { ($0.category.sortOrder, $0.primaryPort, $0.rootPid) < ($1.category.sortOrder, $1.primaryPort, $1.rootPid) }
     }
@@ -57,16 +59,17 @@ struct ListCommand {
             let file = support.appendingPathComponent("prompts.json")
             let now = Date()
             let prompts = PromptLibrary.search(try PromptLibrary.load(from: file), query: query, now: now)
-            func record(_ prompt: Prompt) -> [String: Any] {
-                ["id": prompt.id.uuidString, "title": prompt.displayTitle, "text": prompt.text,
+            func record(_ prompt: Prompt, text: String? = nil) -> [String: Any] {
+                ["id": prompt.id.uuidString, "title": prompt.displayTitle, "text": text ?? prompt.text,
                  "pinned": prompt.pinned, "score": prompt.score(now: now)]
             }
             if !query.isEmpty, format != .mcp {
                 guard let first = prompts.first else { throw CLIError("No matching prompt.") }
-                if format == .json { return try .json(record(first)) }
-                return CommandOutput(text: first.text)
+                let expanded = expandPrompt(first.text)
+                if format == .json { return try .json(record(first, text: expanded)) }
+                return CommandOutput(text: expanded)
             }
-            if format != .text { return try .json(prompts.map(record)) }
+            if format != .text { return try .json(prompts.map { record($0) }) }
             return CommandOutput(text: prompts.map { "\($0.displayTitle)\t\(String(format: "%.2f", $0.score(now: now)))\n" }.joined())
         case .logs(let target, let tail):
             return CommandOutput(text: try logTail(target: target, lines: tail))
@@ -75,6 +78,9 @@ struct ListCommand {
             return try .json(["status": page.status, "title": page.title as Any, "isSecure": page.isSecure])
         case .stop(let target), .restart(let target):
             let server = try Self.resolve(target, servers: scan(true, false))
+            if let container = server.containerName {
+                throw CLIError("\(server.title) runs inside container '\(container)'. Stop or restart it with docker or orb instead.")
+            }
             let restart = action == .restart(target)
             if restart && server.launch == nil { throw CLIError("No launch command for \(server.title).") }
             if restart, let spec = server.launch {
@@ -90,6 +96,22 @@ struct ListCommand {
         }
     }
 
+    private func expandPrompt(_ text: String) -> String {
+        let tokens = Set(PromptVariables.tokens(in: text))
+        guard !tokens.isEmpty else { return text }
+        let needsServer = !tokens.isDisjoint(with: ["url", "port", "branch", "project"])
+        let dev = needsServer ? scan(false, false).filter { $0.category == .dev }.max(by: { $0.startDate < $1.startDate }) : nil
+        let clip = tokens.contains("clipboard") ? clipboard().flatMap { $0.isEmpty ? nil : $0 } : nil
+        let context = PromptContext(
+            clipboard: clip,
+            url: dev?.localURL?.absoluteString,
+            port: dev.map { String($0.primaryPort) },
+            branch: dev?.project?.branch,
+            project: dev?.project?.name ?? dev?.title
+        )
+        return PromptVariables.expand(text, context: context)
+    }
+
     static func record(_ server: Server, host: String?, log: URL?, cpu: Bool) -> [String: Any] {
         ["id": server.id, "primaryPort": server.primaryPort,
          "ports": server.ports.map { ["port": $0.port, "address": $0.address, "isIPv6": $0.isIPv6, "acceptsIPv4": $0.acceptsIPv4] as [String: Any] },
@@ -98,6 +120,7 @@ struct ListCommand {
          "branch": server.project?.branch as Any, "subpath": server.project?.subpath as Any,
          "worktree": server.project?.worktree as Any, "projectRoot": server.project?.root as Any,
          "directory": server.directory as Any, "pid": server.pid, "rootPid": server.rootPid, "command": server.command,
+         "launcher": server.launcher as Any, "containerName": server.containerName as Any,
          "uptimeSeconds": max(0, Int(Date().timeIntervalSince(server.startDate))),
          "cpu": cpu ? server.cpu as Any : NSNull(), "memoryBytes": server.memory, "processCount": server.processCount,
          "logPath": log?.path as Any]
@@ -135,7 +158,8 @@ struct ListCommand {
         }
         guard !target.isEmpty else { return [] }
         return servers.filter { server in
-            [server.title, server.project?.name, server.project?.folder, server.directory].compactMap { $0 }
+            [server.title, server.containerName, server.launcher, server.project?.name, server.project?.folder, server.directory]
+                .compactMap { $0 }
                 .contains { $0.localizedCaseInsensitiveContains(target) }
         }
     }

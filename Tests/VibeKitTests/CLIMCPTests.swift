@@ -67,9 +67,11 @@ final class CLIMCPTests: XCTestCase {
         let result = try await service.run(.list(all: true, cpu: false), format: .json)
         let array = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.text.utf8)) as? [Object])
         let row = try XCTUnwrap(array.first)
-        XCTAssertEqual(Set(row.keys), Set("id primaryPort ports title framework category url networkURL branch subpath worktree projectRoot directory pid rootPid command uptimeSeconds cpu memoryBytes processCount logPath".split(separator: " ").map(String.init)))
+        XCTAssertEqual(Set(row.keys), Set("id primaryPort ports title framework category url networkURL branch subpath worktree projectRoot directory pid rootPid command launcher containerName uptimeSeconds cpu memoryBytes processCount logPath".split(separator: " ").map(String.init)))
         XCTAssertTrue(row["cpu"] is NSNull)
         XCTAssertTrue(row["worktree"] is NSNull)
+        XCTAssertTrue(row["launcher"] is NSNull)
+        XCTAssertTrue(row["containerName"] is NSNull)
         XCTAssertEqual(row["logPath"] as? String, file.path)
         XCTAssertEqual((row["ports"] as? [Object])?.last?["isIPv6"] as? Bool, true)
         let output = try await service.run(.logs("5001", tail: 3), format: .text)
@@ -187,6 +189,38 @@ final class CLIMCPTests: XCTestCase {
         try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "../missing")
         XCTAssertEqual(try installer.install(), .conflict(link))
         XCTAssertEqual(try installer.uninstall(), .conflict(link))
+    }
+
+    func testContainerStopIsRefusedAndPromptExpandsVariables() async throws {
+        let dir = try temporaryDirectory()
+        let container = Server(id: "container-abc123", pid: 900, rootPid: 900, listenerPids: [900],
+                               startDate: Date(timeIntervalSince1970: 0),
+                               ports: [PortBinding(port: 5432, address: "0.0.0.0", isIPv6: false)],
+                               framework: .postgres, project: nil, processName: "shop-db-1",
+                               executable: "/Applications/OrbStack.app/Contents/MacOS/OrbStack",
+                               command: "postgres:16-alpine", directory: nil, launch: nil,
+                               launcher: "OrbStack", containerName: "shop-db-1")
+        let dev = server("Shop", pid: 100, port: 3000)
+        try PromptLibrary.save([
+            Prompt(title: "Debug server", text: "Check {{url}} on {{branch}} ({{project}}:{{port}}) clip={{clipboard}} {{unknown}}")
+        ], to: dir.appendingPathComponent("prompts.json"))
+
+        let service = ListCommand(support: dir, scan: { _, _ in [container, dev] }, clipboard: { "trace-42" })
+        do {
+            _ = try await service.run(.stop("5432"), format: .text)
+            XCTFail("Expected stopping a container row to fail")
+        } catch let error as CLIError {
+            XCTAssertTrue(error.localizedDescription.contains("shop-db-1"))
+        }
+
+        let expanded = try await service.run(.prompts("debug"), format: .text)
+        XCTAssertEqual(expanded.text, "Check http://localhost:3000 on main (Shop:3000) clip=trace-42 {{unknown}}")
+
+        // MCP list_prompts returns raw templates without touching clipboard.
+        let mcp = MCPServer { try await service.run($0, format: .mcp) }
+        let listed = try await rpc(mcp, "tools/call", params: ["name": "list_prompts", "arguments": ["query": "debug"]])
+        let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(content(listed).utf8)) as? [Object])
+        XCTAssertEqual(rows.first?["text"] as? String, "Check {{url}} on {{branch}} ({{project}}:{{port}}) clip={{clipboard}} {{unknown}}")
     }
 }
 

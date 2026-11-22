@@ -395,7 +395,7 @@ struct ServerListPage: View {
             } else {
                 Text("No matches for “\(query)”")
                     .font(.system(size: 13, weight: .semibold))
-                Text("Search by project, port, framework, branch or command.")
+                Text("Search by project, port, framework, branch, launcher or command.")
                     .font(Theme.metaFont)
                     .foregroundStyle(.secondary)
             }
@@ -519,7 +519,11 @@ struct ServerListPage: View {
             Button("") { if let server = shortcutServer() { store.restart(server) } }.keyboardShortcut("r", modifiers: .command)
             // While you type, ⌘⌫ deletes to the start of the line, as in any text field. It stops only a row you
             // picked, never the fallback, so pressing it once more after the search clears stops nothing.
-            Button("") { if query.isEmpty, let picked = shortcutServer(explicitSelection: true) { store.stop(picked) } }.keyboardShortcut(.delete, modifiers: .command)
+            Button("") {
+                if query.isEmpty, let picked = shortcutServer(explicitSelection: true), picked.containerName == nil {
+                    store.stop(picked)
+                }
+            }.keyboardShortcut(.delete, modifiers: .command)
                 .disabled(!query.isEmpty)
             Button("") { if let server = shortcutServer() { store.copyURL(server) } }.keyboardShortcut("c", modifiers: [.command, .shift])
             Button("") { if let server = shortcutServer() { store.openInEditor(server); close() } }.keyboardShortcut("o", modifiers: .command)
@@ -613,6 +617,7 @@ struct ServerListPage: View {
                 || [server.pid, server.rootPid].contains { String($0) == port } || server.listenerPids.contains { String($0) == port }
         }
         let haystack = [server.title, server.framework.name, server.processName, server.command,
+                        server.launcher ?? "", server.containerName ?? "",
                         server.project?.branch ?? "", server.project?.subpath ?? "", server.project?.worktree ?? "",
                         store.pages[server.id]?.title ?? "", server.ports.map { String($0.port) }.joined(separator: " ")]
             .joined(separator: "\n").lowercased()

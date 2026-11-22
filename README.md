@@ -56,15 +56,16 @@ The **V** in the panel header shows the worst light across all dev servers, and 
   </picture>
 </p>
 
-- **Finds servers by port.** Vite, Next.js, Astro, Django, FastAPI, Rails, Phoenix, Go, Rust, Swift and about 90 other frameworks, databases and services are recognised. Anything else that listens on a port is still listed, under Other Listeners.
-- **Names them by project.** Each server shows its git repository, subfolder and branch. Linked worktrees get the main repository's name and a **worktree** tag.
-- **Groups them.** Dev servers first, then databases (Postgres, Redis, MySQL, MongoDB and more), then services (Docker, OrbStack, Ollama, ngrok, Cloudflare Tunnel and more). Desktop apps and system processes stay out of the way in a collapsed section.
-- **Acts in one click or one key.** Open in the browser. Copy the URL, or the connection URL for a database. Restart. Stop, or force quit. Stop all dev servers. Open the folder in your editor or terminal, or reveal it in Finder.
-- **Restarts properly.** Vibe Kit walks up from the listening process to the command you actually typed (`npm run dev`, `uv run`, `cargo run` and so on), then starts it again in the same folder with the same environment. Restarted servers write to a log you can read live in the panel, with colors.
-- **Notices crashes.** A server Vibe Kit started that exits with an error stays in the list as crashed, with its exit code and its log. One you stopped yourself just shows as stopped.
-- **Warns about shared ports.** When two servers hold the same port, for example one on IPv4 and one on IPv6, both get a **shared port** tag, because `localhost` may reach either one.
+- **Finds servers by port.** Vite, Next.js, Astro, Django, FastAPI, Rails, Phoenix, Go, Rust, Swift, local AI servers (Ollama, llama.cpp, vLLM, MLX-LM, LiteLLM), workflow engines (Inngest, Temporal), and about 100 other frameworks, databases and services are recognised. Anything else that listens on a port is still listed, under Other Listeners.
+- **Unpacks Docker and OrbStack containers.** Published ports from Docker or OrbStack containers show up as the database or service running inside each container (such as PostgreSQL or Redis with its container name), asked directly over the local Docker Unix socket while the panel is open.
+- **Names them by project and launcher.** Each server shows its git repository, subfolder and branch. Linked worktrees get the main repository's name and a worktree tag (showing the worktree slug when several checkouts of the same repo are running). Expanded details show which app or coding agent started the server (such as Claude Code, Ghostty or launchd).
+- **Groups them.** Dev servers first, then databases (Postgres, Redis, MySQL, MongoDB and more), then services (Docker, OrbStack, Ollama, Mailpit, MinIO, ngrok, Cloudflare Tunnel and more). Web UI ports come first for multi-port tools like Mailpit, MinIO and RabbitMQ, and every listening port is clickable in details.
+- **Acts in one click or one key.** Open in the browser (including HTTP services and admin UIs). Copy the URL, or the connection URL for a database. Re-check HTTP status or skip checks for non-HTTP dev servers. Restart. Stop, or force quit. Stop all dev servers. Open the folder in your editor or terminal, or reveal it in Finder.
+- **Restarts properly.** Vibe Kit walks up from the listening process to the command you actually typed (`npm run dev`, `uv run`, `cargo run`, `node --watch` and so on), then starts it again in the same folder with the same environment. Restarted servers write to a log you can read live in the panel, with colors.
+- **Notices crashes.** A server Vibe Kit started that exits with an error stays in the list as crashed, with its exit code and a clickable crash badge that jumps straight to its log. Crashes that happen while the panel is closed surface as a notice the next time you open it.
+- **Warns about shared ports.** When two servers hold the same port (for example IPv4 and IPv6), each row labels its address family (`shared · IPv4` / `shared · IPv6`), opens directly to `127.0.0.1` or `[::1]`, and offers **Stop Other** in the right-click menu.
 - **Shares to your phone.** Servers bound to all interfaces get a **LAN** tag, a network URL and a QR code.
-- **Answers port questions.** Type a port number to see if it is free. Type a PID to find its server.
+- **Answers port questions.** Type a port number to see if it is free, or copy a `sudo lsof` command when another user or system service owns it. Type a PID, branch, launcher or container name to filter straight to it.
 - **Works with any menu bar.** The panel opens in the right place when the menu bar hides itself, on the display you are using, and when the icon is hidden behind the notch.
 
 ## Prompts
@@ -78,7 +79,8 @@ The **V** in the panel header shows the worst light across all dev servers, and 
 
 The panel's second tab keeps the prompts you send to coding agents again and again. Press **Tab** in the panel to switch to it, or **⌃⌥⌘P** from anywhere.
 
-- **Use one in a keystroke.** Press ↩, or ⌘1 to ⌘9, to copy a prompt. Turn on **Paste into the app in front** in Settings and Vibe Kit pastes it for you when the panel closes. Pasting needs Accessibility access, which macOS asks for the first time.
+- **Use one in a keystroke.** Press ↩, or ⌘1 to ⌘9, to copy a prompt. Turn on **Paste into the app in front** in Settings and Vibe Kit pastes it for you when the panel closes, then puts your previous clipboard back. Pasting needs Accessibility access, which macOS asks for the first time.
+- **Context variables.** Prompts can include `{{url}}`, `{{port}}`, `{{branch}}`, `{{project}}` and `{{clipboard}}`. Vibe Kit fills them from your active dev server (preferring a failing one) and your clipboard right when you use the prompt.
 - **Your best ones float up.** Pin the ones you always want on top. The rest are ordered by how often and how recently you used them, and the bar on the left of each row shows it.
 - **Save from anywhere.** Select text in any app, then right-click and choose **Services → Add to Vibe Kit**. Or press **New**, or save what is on the clipboard.
 - **A file you own.** Prompts live in `~/Library/Application Support/VibeKit/prompts.json`, readable and sorted, so you can edit it by hand or keep it in your dotfiles. Changes made outside Vibe Kit show up the next time the panel opens.
@@ -177,20 +179,25 @@ Measure it on your own machine:
 
 Everything Vibe Kit shows comes from your own machine. It makes two kinds of network request. It asks your own local dev servers for their page titles. Once a day it fetches the update feed (`appcast.xml`) from GitHub, and downloads the update if there is one. The update check sends no system profile, analytics or identifiers, only what any download sends: your IP address and the app's version in the user agent. Turn the checks off under Settings › Updates. Builds from source never check. To restart a server, Vibe Kit reads that process's environment variables and keeps them in memory only. They are never written to disk, logged or shown.
 
-## Command line
+## Command line & MCP
 
-The app binary doubles as a small CLI:
+Install the `vibekit` symlink from **Settings › Command line** (links `~/.local/bin/vibekit` or `/usr/local/bin/vibekit`), or invoke the app binary directly:
 
 ```sh
-VibeKit --list               # dev servers, databases and services as a table
-VibeKit --list --all         # include apps and other listeners
-VibeKit --toggle             # open or close the panel of the running app, for Raycast, Alfred or scripts
-VibeKit --toggle prompts     # the same, on the Prompts tab
-VibeKit --bench [sec]        # measure scan cost; add --open for the open-panel cadence
-VibeKit --snapshot out.png   # render the panel to a PNG without opening it
-        [--dark] [--settings] [--prompts] [--edit-prompt] [--query text] [--select-port N] [--expand-port N]
-        [--demo] [--transparent]
+vibekit --list [--all] [--cpu] [--json]       # servers as a table or JSON (--cpu samples 300 ms)
+vibekit port <N> [--json]                     # check port availability and owner (exit 0 free, 1 taken)
+vibekit port --next <N> [--json]              # find the next free port starting at N
+vibekit stop <target> [--json]                # stop by port, PID, or project/title
+vibekit restart <target> [--json]             # restart and capture logs
+vibekit logs <target> [--tail N]              # print the last N clean log lines (default 50)
+vibekit prompt [query] [--json]               # list prompts, or expand and print the best match
+vibekit --toggle [servers|prompts] [--query]  # open or filter the running panel (Raycast, Alfred, scripts)
+vibekit --mcp [--allow-control]               # stdio MCP server for coding agents
+vibekit --bench [sec] [--open]                # measure scan cost
+vibekit --snapshot out.png [options]          # render the panel to a PNG without opening it
 ```
+
+With `--mcp`, coding agents (Claude Code, Codex, Cursor and others) can call `list_servers`, `check_port`, `probe_server`, `read_server_logs` and `list_prompts` over stdio. Pass `--allow-control` to also expose `stop_server` and `restart_server`.
 
 `--demo` renders sample servers and prompts instead of yours, which is how the screenshots above are made.
 

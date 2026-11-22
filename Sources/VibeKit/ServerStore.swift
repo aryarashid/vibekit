@@ -220,21 +220,24 @@ final class ServerStore {
         let interval: DispatchTimeInterval = open ? .milliseconds(1500) : .seconds(4)
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + interval, repeating: interval, leeway: open ? .milliseconds(150) : .seconds(1))
-        timer.setEventHandler(handler: Self.scanJob(scanner, categories: scanCategories, fullSweep: false, store: self))
+        timer.setEventHandler(handler: Self.scanJob(scanner, categories: scanCategories, fullSweep: false,
+                                                    resolveContainers: isPanelOpen, store: self))
         timer.resume()
         self.timer = timer
     }
 
     func scanNow(fullSweep: Bool = false) {
         guard !isDemo else { return }
-        queue.async(execute: Self.scanJob(scanner, categories: scanCategories, fullSweep: fullSweep, store: self))
+        queue.async(execute: Self.scanJob(scanner, categories: scanCategories, fullSweep: fullSweep,
+                                          resolveContainers: isPanelOpen, store: self))
     }
 
     /// Built outside the main actor because it runs on the scan queue.
     private nonisolated static func scanJob(_ scanner: PortScanner, categories: Set<ServerCategory>, fullSweep: Bool,
-                                            store: ServerStore) -> @Sendable () -> Void {
+                                            resolveContainers: Bool, store: ServerStore) -> @Sendable () -> Void {
         { [weak store] in
-            let result = scanner.scan(usageFor: categories, fullSweep: fullSweep)
+            var result = scanner.scan(usageFor: categories, fullSweep: fullSweep)
+            if resolveContainers { result = ContainerResolver.resolve(servers: result) }
             Task { @MainActor in store?.apply(result) }
         }
     }
@@ -497,7 +500,7 @@ final class ServerStore {
     }
 
     func stop(_ server: Server) {
-        guard pending[server.id] == nil else { return }
+        guard server.containerName == nil, pending[server.id] == nil else { return }
         pending[server.id] = .stopping
         schedule()
         Task {
@@ -513,6 +516,7 @@ final class ServerStore {
 
     /// Also cancels a restart in progress: the restart sees it is no longer pending and does not start it again.
     func forceQuit(_ server: Server) {
+        guard server.containerName == nil else { return }
         pending[server.id] = .stopping
         schedule()
         ProcessControl.forceKill(root: server.rootPid, started: server.startDate)
@@ -532,7 +536,7 @@ final class ServerStore {
     }
 
     func restart(_ server: Server) {
-        guard let launch = server.launch, pending[server.id] == nil else { return }
+        guard server.containerName == nil, let launch = server.launch, pending[server.id] == nil else { return }
         pending[server.id] = .restarting
         schedule()
         Task {
