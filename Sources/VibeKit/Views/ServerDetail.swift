@@ -9,6 +9,7 @@ struct ServerDetail: View {
     let onShowLogs: () -> Void
     let onClose: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showQR = false
 
     private var editor: ExternalApp? { ExternalApp.resolve(store.settings.editorID, in: ExternalApp.editors) }
@@ -16,7 +17,8 @@ struct ServerDetail: View {
     private var folder: String? { server.project?.root ?? server.directory }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 5) {
+            Divider().padding(.bottom, 3)
             if let page {
                 HStack(spacing: 6) {
                     Text(page.title ?? "No page title")
@@ -30,15 +32,15 @@ struct ServerDetail: View {
 
             if let url = store.url(for: server) {
                 line("globe", url.absoluteString, mono: true) {
-                    IconButton(symbol: "doc.on.doc", help: "Copy", size: 22) { store.copy(url.absoluteString) }
+                    IconButton(symbol: "doc.on.doc", help: "Copy URL", size: 22) { store.copy(url.absoluteString) }
                 }
             }
             if let network = store.networkURL(for: server) {
                 line("wifi", network.absoluteString, mono: true) {
                     IconButton(symbol: "qrcode", help: showQR ? "Hide QR code" : "Show QR code to open on a phone", size: 22) {
-                        withAnimation(.easeOut(duration: 0.18)) { showQR.toggle() }
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { showQR.toggle() }
                     }
-                    IconButton(symbol: "doc.on.doc", help: "Copy", size: 22) { store.copy(network.absoluteString) }
+                    IconButton(symbol: "doc.on.doc", help: "Copy network URL", size: 22) { store.copy(network.absoluteString) }
                 }
                 if showQR {
                     HStack {
@@ -52,7 +54,7 @@ struct ServerDetail: View {
                 }
             }
             if let folder {
-                line("folder", Format.path(folder) + (server.project?.branch.map { "  ⎇ \($0)" } ?? "")) {
+                line("folder", Format.path(folder), branch: server.project?.branch) {
                     IconButton(symbol: "arrow.up.right", help: "Reveal in Finder", size: 22) { store.reveal(server); onClose() }
                 }
             }
@@ -61,26 +63,39 @@ struct ServerDetail: View {
             }
             line("cpu", processSummary) { EmptyView() }
 
-            HStack(spacing: 6) {
-                if folder != nil {
-                    if let editor {
-                        PillButton(title: editor.name, image: editor.icon) { store.openInEditor(server); onClose() }
-                    }
-                    if let terminal {
-                        PillButton(title: terminal.name, image: terminal.icon) { store.openInTerminal(server); onClose() }
-                    }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    projectActions
+                    Spacer(minLength: 6)
+                    forceQuit
                 }
-                if store.logURL(for: server) != nil {
-                    PillButton(title: "Logs", symbol: "text.alignleft", action: onShowLogs)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) { projectActions }
+                    forceQuit
                 }
-                Spacer(minLength: 0)
-                PillButton(title: "Force Quit", role: .destructive) { store.forceQuit(server) }
             }
-            .padding(.top, 3)
+            .padding(.top, 4)
         }
-        .padding(.leading, 10 + Theme.portColumn + 10)
-        .padding(.trailing, 10)
+        .padding(.horizontal, 12)
         .padding(.bottom, 10)
+    }
+
+    private var forceQuit: some View {
+        PillButton(title: "Force Quit", role: .destructive) { store.forceQuit(server) }
+    }
+
+    @ViewBuilder private var projectActions: some View {
+        if folder != nil {
+            if let editor {
+                PillButton(title: editor.name, image: editor.icon) { store.openInEditor(server); onClose() }
+            }
+            if let terminal {
+                PillButton(title: terminal.name, image: terminal.icon) { store.openInTerminal(server); onClose() }
+            }
+        }
+        if store.logURL(for: server) != nil {
+            PillButton(title: "Logs", symbol: "text.alignleft", action: onShowLogs)
+        }
     }
 
     private var processSummary: String {
@@ -91,19 +106,29 @@ struct ServerDetail: View {
         return parts.joined(separator: " · ")
     }
 
-    private func line<Trailing: View>(_ symbol: String, _ text: String, mono: Bool = false, lines: Int = 1,
+    private func line<Trailing: View>(_ symbol: String, _ text: String, mono: Bool = false, lines: Int = 1, branch: String? = nil,
                                       @ViewBuilder trailing: () -> Trailing) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
             Image(systemName: symbol)
                 .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Theme.readout)
                 .frame(width: 14)
             Text(text)
                 .font(mono ? Theme.monoSmall : Theme.metaFont)
                 .foregroundStyle(.secondary)
                 .lineLimit(lines)
                 .truncationMode(.middle)
+                .monospacedDigit()
                 .textSelection(.enabled)
+                .help(text)
+            if let branch {
+                Label(branch, systemImage: "arrow.triangle.branch")
+                    .font(Theme.metaFont)
+                    .foregroundStyle(Theme.readout)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help("Git branch: \(branch)")
+            }
             Spacer(minLength: 4)
             HStack(spacing: 0, content: trailing)
                 .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 3 }

@@ -16,13 +16,13 @@ struct SettingsPage: View {
             PageHeader(title: "Settings", back: back) { EmptyView() }
             Divider().opacity(0.6)
             MeasuredScroll(onHeight: { onHeightChange($0 + 47) }) {
-                VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 12) {
                     group("General") {
                         toggle("Launch at login", isOn: Binding(get: { settings.launchAtLogin }, set: { settings.setLaunchAtLogin($0) }))
                         toggle("Show server count in the menu bar", isOn: $settings.showCountInMenuBar)
                         toggle("Show other listeners (apps and system services)", isOn: $settings.showOtherListeners)
-                        toggle("Open with ⌃⌥⌘V from anywhere", isOn: $settings.hotKeyEnabled)
-                        toggle("Open Prompts with ⌃⌥⌘P from anywhere", isOn: $settings.promptsHotKeyEnabled)
+                        toggle("Open Servers from anywhere", keys: "⌃⌥⌘V", isOn: $settings.hotKeyEnabled)
+                        toggle("Open Prompts from anywhere", keys: "⌃⌥⌘P", isOn: $settings.promptsHotKeyEnabled)
                         if !settings.takenShortcuts.isEmpty {
                             let keys = settings.takenShortcuts.sorted().reversed().joined(separator: " and ")
                             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -32,15 +32,15 @@ struct SettingsPage: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             .font(Theme.metaFont)
-                            .padding(.horizontal, 16)
+                            .padding(.horizontal, 10)
                             .padding(.vertical, 4)
                         }
                     }
                     if LidSleep.isSupported {
-                        group("Lid") { lidSleepRows }
+                        group("Lid sleep") { lidSleepRows }
                     }
                     group("Prompts") {
-                        toggle("Paste into the app in front when you pick a prompt", isOn: Binding(
+                        toggle("Paste into the front app when picking a prompt", isOn: Binding(
                             get: { settings.pasteOnUse },
                             set: { on in
                                 settings.pasteOnUse = on
@@ -60,25 +60,25 @@ struct SettingsPage: View {
                                     .fontWeight(.semibold)
                             }
                             .font(Theme.metaFont)
-                            .padding(.horizontal, 16)
+                            .padding(.horizontal, 10)
                             .padding(.vertical, 4)
                         }
                         HStack {
                             Text("Prompts file").font(.system(size: 12.5))
-                            Text("prompts.json").font(Theme.monoSmall).foregroundStyle(.tertiary)
+                            Text("prompts.json").font(Theme.monoSmall).foregroundStyle(Theme.readout)
                             Spacer()
                             Button("Show in Finder") { prompts.revealFile() }
                                 .controlSize(.small)
                                 .help("A readable JSON file. Edit it by hand or keep it in your dotfiles; Vibe Kit picks up changes.")
                         }
-                        .padding(.horizontal, 16)
-                        .frame(height: 30)
+                        .padding(.horizontal, 10)
+                        .frame(minHeight: 32)
                     }
                     group("Open projects with") {
                         picker("Editor", selection: $settings.editorID, apps: ExternalApp.editors)
                         picker("Terminal", selection: $settings.terminalID, apps: ExternalApp.terminals)
                     }
-                    group("Keyboard") {
+                    group("Keyboard shortcuts") {
                         shortcut("↑  ↓", "Move between servers")
                         shortcut("↩", "Open in browser, or start a stopped server")
                         shortcut("→", "Show details")
@@ -87,6 +87,7 @@ struct SettingsPage: View {
                         shortcut("⌘⌫", "Stop")
                         shortcut("⇧⌘C", "Copy URL")
                         shortcut("⌘O  ⌘T", "Open in editor or terminal")
+                        Divider().padding(.horizontal, 10).padding(.vertical, 4)
                         shortcut("Tab", "Switch between servers and prompts")
                         shortcut("↩  ⌘1–⌘9", "Use a prompt")
                         shortcut("⌘N  ⌘E", "New or edit prompt")
@@ -104,14 +105,18 @@ struct SettingsPage: View {
                         Spacer()
                         PillButton(title: "Quit", symbol: "power") { NSApp.terminate(nil) }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 12)
             }
         }
         .onAppear {
-            settings.refreshLaunchAtLogin()
-            settings.refreshLidStayAwake()
+            if !store.isDemo {
+                settings.refreshLaunchAtLogin()
+                settings.refreshLidStayAwake()
+            }
             pasteAccess = PromptStore.canPaste
         }
     }
@@ -134,8 +139,8 @@ struct SettingsPage: View {
             .controlSize(.small)
             .disabled(settings.lidHelperBusy)
         }
-        .padding(.horizontal, 16)
-        .frame(height: 30)
+        .padding(.horizontal, 10)
+        .frame(minHeight: 32)
         Group {
             if let error = settings.lidHelperError {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -163,7 +168,7 @@ struct SettingsPage: View {
             }
         }
         .font(Theme.metaFont)
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 10)
         .padding(.vertical, 4)
     }
 
@@ -197,31 +202,35 @@ struct SettingsPage: View {
     }
 
     private func group<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title.uppercased())
-                .font(Theme.sectionFont)
-                .kerning(0.7)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
-                .padding(.bottom, 4)
-            content()
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.readout)
+                .padding(.leading, 9)
+                .accessibilityAddTraits(.isHeader)
+            VStack(alignment: .leading, spacing: 0, content: content)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 3)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.035)))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5).allowsHitTesting(false))
         }
     }
 
-    private func toggle(_ title: String, isOn: Binding<Bool>) -> some View {
+    private func toggle(_ title: String, keys: String? = nil, isOn: Binding<Bool>) -> some View {
         // Switches line up in one column on the right, like System Settings.
         HStack {
             Text(title).font(.system(size: 12.5))
                 .accessibilityHidden(true)
             Spacer(minLength: 8)
+            if let keys { KeyCap(keys).accessibilityHidden(true) }
             Toggle(title, isOn: isOn)
                 .labelsHidden()
                 .toggleStyle(PanelSwitch())
-                .accessibilityLabel(title)
+                .accessibilityLabel([title, keys].compactMap { $0 }.joined(separator: ", "))
         }
-        .padding(.horizontal, 16)
-        .frame(height: 28)
+        .padding(.horizontal, 10)
+        .frame(minHeight: 31)
     }
 
     private func picker(_ title: String, selection: Binding<String?>, apps: [ExternalApp]) -> some View {
@@ -241,8 +250,8 @@ struct SettingsPage: View {
                 .controlSize(.small)
             }
         }
-        .padding(.horizontal, 16)
-        .frame(height: 30)
+        .padding(.horizontal, 10)
+        .frame(minHeight: 32)
     }
 
     /// `keys` holds one or more key combinations, two spaces apart. Each one is drawn as a key cap.
@@ -254,8 +263,8 @@ struct SettingsPage: View {
                 KeyCap(key)
             }
         }
-        .padding(.horizontal, 16)
-        .frame(height: 24)
+        .padding(.horizontal, 10)
+        .frame(minHeight: 25)
         .accessibilityElement(children: .combine)
     }
 }

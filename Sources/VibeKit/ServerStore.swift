@@ -116,7 +116,7 @@ final class ServerStore {
     @ObservationIgnored private let scanner = PortScanner()
     @ObservationIgnored private let queue = DispatchQueue(label: "dev.vibekit.scan", qos: .utility)
     @ObservationIgnored private var timer: DispatchSourceTimer?
-    @ObservationIgnored private var isDemo = false
+    @ObservationIgnored private(set) var isDemo = false
     @ObservationIgnored private var probing = Set<String>()
     @ObservationIgnored private var staleProbes = Set<String>()
     @ObservationIgnored private var probeAttempts: [String: Int] = [:]

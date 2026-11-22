@@ -10,6 +10,9 @@ struct LogPage: View {
 
     @State private var text = NSAttributedString()
 
+    @State private var copyRequest = 0
+    @State private var copyStatus = ""
+
     private struct FileStamp: Equatable {
         let size: UInt64
         let modified: Date?
@@ -18,6 +21,15 @@ struct LogPage: View {
     var body: some View {
         VStack(spacing: 0) {
             PageHeader(title: "Logs", subtitle: subtitle, back: back) {
+                if !copyStatus.isEmpty {
+                    Text(copyStatus)
+                        .font(Theme.metaFont)
+                        .foregroundStyle(Theme.readout)
+                }
+                IconButton(symbol: copyStatus == "Copied" ? "checkmark" : "doc.on.doc", help: "Copy full log") {
+                    copyRequest += 1
+                }
+                .disabled(copyStatus == "Copying…")
                 IconButton(symbol: "arrow.up.forward.app", help: "Open in Console") {
                     NSWorkspace.shared.open([url], withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Console.app"),
                                             configuration: NSWorkspace.OpenConfiguration())
@@ -28,8 +40,27 @@ struct LogPage: View {
             }
             Divider().opacity(0.6)
             LogTextView(text: text)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.035)))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .padding(6)
         }
         .onAppear { onHeightChange(PanelMetrics.maxHeight) }
+        .task(id: copyRequest) {
+            guard copyRequest > 0 else { return }
+            copyStatus = "Copying…"
+            let url = url
+            let output = await Task.detached(priority: .userInitiated) { try? Self.fullOutput(of: url) }.value
+            guard !Task.isCancelled else { return }
+            if let output, !output.isEmpty {
+                NSPasteboard.general.clearContents()
+                copyStatus = NSPasteboard.general.setString(output, forType: .string) ? "Copied" : "Copy failed"
+            } else {
+                copyStatus = output == nil ? "Read failed" : "Log is empty"
+            }
+            AccessibilityNotification.Announcement(copyStatus).post()
+            try? await Task.sleep(for: .seconds(2))
+            if !Task.isCancelled { copyStatus = "" }
+        }
         .task(id: url) {
             var lastStamp: FileStamp?
             while !Task.isCancelled {
@@ -47,6 +78,16 @@ struct LogPage: View {
                 try? await Task.sleep(for: .milliseconds(600))
             }
         }
+    }
+
+    /// Copy the entire file on demand. Live viewing only reads the most recent 96 KiB.
+    nonisolated static func fullOutput(of url: URL) throws -> String {
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        let raw = String(decoding: data, as: UTF8.self)
+        guard raw.contains("\u{1B}") || raw.contains("\r") else { return raw }
+        var plain = ANSI.parse(raw).map(\.text).joined()
+        if raw.utf8.last != 10, plain.hasSuffix("\n") { plain.removeLast() }
+        return plain
     }
 
     nonisolated static func tail(of url: URL, bytes: Int) -> String {
@@ -72,15 +113,17 @@ enum ANSI {
     enum Tone: Equatable, Sendable {
         case muted, red, green, yellow, blue, purple, teal
 
+        private static let blueInk = Theme.dynamic(dark: 0x70ADFF, light: 0x215EB5)
+
         @MainActor var color: NSColor {
             switch self {
             case .muted: .secondaryLabelColor
-            case .red: .systemRed
-            case .green: .systemGreen
-            case .yellow: .systemYellow
-            case .blue: .systemBlue
-            case .purple: .systemPurple
-            case .teal: .systemTeal
+            case .red: Theme.redNS
+            case .green: Theme.mintNS
+            case .yellow: Theme.amberNS
+            case .blue: Self.blueInk
+            case .purple: Theme.violetNS
+            case .teal: Theme.cyanNS
             }
         }
     }
@@ -123,7 +166,8 @@ enum ANSI {
         var bold = false
         var dim = false
 
-        var lines = input.split(separator: "\n", omittingEmptySubsequences: false)
+        let normalized = input.replacingOccurrences(of: "\r\n", with: "\n")
+        var lines = normalized.split(separator: "\n", omittingEmptySubsequences: false)
         // Output that ends with a newline has no line after it. Without this, the text would end in a blank line.
         if lines.count > 1, lines.last?.isEmpty == true { lines.removeLast() }
         for rawLine in lines {
@@ -236,7 +280,7 @@ struct LogTextView: NSViewRepresentable {
             view.isSelectable = true
             view.drawsBackground = false
             view.isRichText = true
-            view.textContainerInset = NSSize(width: 8, height: 10)
+            view.textContainerInset = NSSize(width: 7, height: 9)
             view.font = ANSI.font
             view.setAccessibilityLabel("Log output")
             // TextKit 1 from the start: trimming old lines measures their height through the layout manager.

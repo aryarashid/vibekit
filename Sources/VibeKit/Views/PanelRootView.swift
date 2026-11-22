@@ -16,6 +16,7 @@ struct PanelRootView: View {
     let onUsePrompt: (Prompt) -> Void
     let close: () -> Void
     /// Starting state: the tab to show, and for `--snapshot` specific screens.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let initial: InitialState
 
     @State private var route: Route
@@ -61,10 +62,11 @@ struct PanelRootView: View {
                 PromptEditor(prompts: prompts, id: id, back: { route = .list }, onHeightChange: onHeightChange)
             }
         }
-        .frame(width: PanelMetrics.width)
+        .frame(maxWidth: PanelMetrics.width)
         // Pinned to the top: if the panel is ever shorter than its content, the bottom gives way, never the header.
         .frame(minHeight: 0, maxHeight: .infinity, alignment: .top)
         .clipped()
+        .transaction { if reduceMotion { $0.animation = nil; $0.disablesAnimations = true } }
         .onChange(of: tab) { _, tab in store.settings.lastTab = tab }
     }
 }
@@ -82,6 +84,14 @@ struct MeasuredScroll<Content: View>: View {
                 })
         }
         .scrollIndicators(.automatic)
+        // The last few points ease clipped rows into the fixed footer. Content has its own bottom inset.
+        .mask {
+            VStack(spacing: 0) {
+                Rectangle()
+                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 5)
+            }
+        }
         .onPreferenceChange(HeightKey.self) { height in
             MainActor.assumeIsolated { onHeight(height) }
         }
@@ -165,7 +175,7 @@ struct ServerListPage: View {
             header(items: items)
             Divider().opacity(0.6)
             ScrollViewReader { proxy in
-                MeasuredScroll(onHeight: { onHeightChange($0 + Self.headerHeight + Self.footerHeight + 1) }) {
+                MeasuredScroll(onHeight: { onHeightChange($0 + Self.headerHeight + (store.hasScanned ? Self.footerHeight : 0) + 1) }) {
                     content(sections, active: active)
                 }
                 .onChange(of: selection) { _, id in
@@ -174,7 +184,7 @@ struct ServerListPage: View {
                     withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(id, anchor: nil) }
                 }
             }
-            footer
+            if store.hasScanned { footer }
         }
         .onAppear {
             // The first layout happens before the nonactivating panel becomes key.
@@ -188,7 +198,7 @@ struct ServerListPage: View {
             if let port = initial.selectPort { selection = store.servers.first { $0.primaryPort == port }?.id }
             if let port = initial.expandPort { expanded = store.servers.first { $0.primaryPort == port }?.id }
         }
-        .background(shortcuts(items: items))
+        .background(shortcuts)
     }
 
     @State private var keyboardMoved = false
@@ -199,9 +209,7 @@ struct ServerListPage: View {
         HStack(spacing: 9) {
             BrandMark(state: store.overallLight)
                 .help(store.overallLightHelp)
-            TextField("Search servers, ports, projects", text: $query)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13.5))
+            PanelSearchField(title: "Search servers, ports, projects", text: $query)
                 .focused($searchFocused)
                 .onKeyPress(.downArrow) { move(1, in: items); return .handled }
                 .onKeyPress(.upArrow) { move(-1, in: items); return .handled }
@@ -311,10 +319,14 @@ struct ServerListPage: View {
             .help(section.items.isEmpty ? "Show apps and system services that listen on a port" : "Hide")
         } else if section.id == "recents" {
             SectionHeader(title: section.title, count: section.items.count, trailing: AnyView(
-                Button("Clear") { store.clearRecents() }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(.tertiary)
+                Button { store.clearRecents() } label: {
+                    Text("Clear")
+                        .font(.system(size: 11, weight: .medium))
+                        .padding(.horizontal, 7)
+                        .frame(height: 20)
+                }
+                .buttonStyle(PanelButtonStyle(hoverInk: Theme.danger, tint: Theme.danger))
+                .help("Clear recently stopped servers")
             ))
         } else {
             SectionHeader(title: section.title, count: section.items.count)
@@ -442,10 +454,11 @@ struct ServerListPage: View {
             if !dev.isEmpty && failing + silent + starting == 0 {
                 Text("·").foregroundStyle(.tertiary)
                 Text("\(Format.cpu(cpu)) CPU · \(Format.memory(memory))")
-                    .foregroundStyle(Theme.heat(cpu).map(AnyShapeStyle.init) ?? AnyShapeStyle(.tertiary))
+                    .foregroundStyle(Theme.heat(cpu).map(AnyShapeStyle.init) ?? AnyShapeStyle(Theme.readout))
             }
         }
         .font(.system(size: 11, design: .monospaced))
+        .monospacedDigit()
         .lineLimit(1)
     }
 
@@ -466,41 +479,44 @@ struct ServerListPage: View {
         } label: {
             Text(confirmStopAll ? "Stop \(count)?" : "Stop All")
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(confirmStopAll ? Color.white : Color.secondary)
                 .padding(.horizontal, 8)
                 .frame(height: 22)
-                .background(Capsule().fill(confirmStopAll ? Theme.danger : Color.primary.opacity(0.06)))
+                .monospacedDigit()
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PanelButtonStyle(ink: confirmStopAll ? Theme.danger : Theme.readout,
+                                     hoverInk: Theme.danger, tint: confirmStopAll ? Theme.danger : .primary,
+                                     restingFill: confirmStopAll ? 0.14 : 0.06))
         .animation(.easeOut(duration: 0.15), value: confirmStopAll)
         .help("Stop every dev server")
     }
 
     // MARK: Keyboard
 
-    private func shortcuts(items: [Item]) -> some View {
-        let active = activeID(in: items)
-        let server: Server? = {
-            guard let active, case .server(let s)? = items.first(where: { $0.id == active }) else { return nil }
-            return s
-        }()
-        let picked: Server? = {
-            guard let selection, case .server(let s)? = items.first(where: { $0.id == selection }) else { return nil }
-            return s
-        }()
-        return ZStack {
-            Button("") { if let server { store.restart(server) } }.keyboardShortcut("r", modifiers: .command)
+    // SwiftUI can dispatch the previous layout's shortcut just after filtering.
+    // Resolve its target from the current query and selection when the key is pressed.
+    private var visibleItems: [Item] { makeSections().flatMap(\.items) }
+
+    private func shortcutServer(explicitSelection: Bool = false) -> Server? {
+        let items = visibleItems
+        let id = explicitSelection ? selection : activeID(in: items)
+        guard let id, case .server(let server)? = items.first(where: { $0.id == id }) else { return nil }
+        return server
+    }
+
+    private var shortcuts: some View {
+        ZStack {
+            Button("") { if let server = shortcutServer() { store.restart(server) } }.keyboardShortcut("r", modifiers: .command)
             // While you type, ⌘⌫ deletes to the start of the line, as in any text field. It stops only a row you
             // picked, never the fallback, so pressing it once more after the search clears stops nothing.
-            Button("") { if let picked { store.stop(picked) } }.keyboardShortcut(.delete, modifiers: .command)
+            Button("") { if query.isEmpty, let picked = shortcutServer(explicitSelection: true) { store.stop(picked) } }.keyboardShortcut(.delete, modifiers: .command)
                 .disabled(!query.isEmpty)
-            Button("") { if let server { store.copyURL(server) } }.keyboardShortcut("c", modifiers: [.command, .shift])
-            Button("") { if let server { store.openInEditor(server); close() } }.keyboardShortcut("o", modifiers: .command)
-            Button("") { if let server { store.openInTerminal(server); close() } }.keyboardShortcut("t", modifiers: .command)
+            Button("") { if let server = shortcutServer() { store.copyURL(server) } }.keyboardShortcut("c", modifiers: [.command, .shift])
+            Button("") { if let server = shortcutServer() { store.openInEditor(server); close() } }.keyboardShortcut("o", modifiers: .command)
+            Button("") { if let server = shortcutServer() { store.openInTerminal(server); close() } }.keyboardShortcut("t", modifiers: .command)
             Button("") { route = .settings }.keyboardShortcut(",", modifiers: .command)
             // ⌘1 to ⌘9 open the servers in list order.
             ForEach(1..<10) { number in
-                Button("") { openNumbered(number, in: items) }
+                Button("") { openNumbered(number, in: visibleItems) }
                     .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
             }
             Button("") { NSApp.terminate(nil) }.keyboardShortcut("q", modifiers: .command)
