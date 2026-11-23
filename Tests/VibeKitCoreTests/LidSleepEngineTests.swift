@@ -11,10 +11,10 @@ final class LidSleepEngineTests: XCTestCase {
 
     @discardableResult
     private func tick(minutes: Int = 45, lid: Bool? = false, causes: Bool? = true, flag: Bool? = nil, now: Int64? = 1000,
-                      battery: Int? = nil, appPresent: Bool = true) -> LidSleepStatus {
+                      battery: Int? = nil, appPresent: Bool = true, idle: Bool = false) -> LidSleepStatus {
         let inputs = LidSleepEngine.Inputs(
             minutes: minutes, appPresent: appPresent, lidClosed: lid, clamshellCausesSleep: causes, sleepDisabled: flag,
-            now: now, onBattery: battery != nil, batteryPercent: battery)
+            now: now, onBattery: battery != nil, batteryPercent: battery, idleSleepDue: idle)
         return engine.tick(inputs, perform: { action in
             actions.append(action)
             return !failing.contains(action.arguments[0])
@@ -156,12 +156,108 @@ final class LidSleepEngineTests: XCTestCase {
         XCTAssertEqual(actions.filter { $0 == .sleepNow }.count, 3)
     }
 
+    func testAnIdleMacWithTheLidOpenSleepsAsItNormallyWould() {
+        XCTAssertEqual(tick().state, .armed)
+        // Idle past the sleep timer with nothing keeping it awake: let go, and let macOS sleep it.
+        var status = tick(now: 1020, idle: true)
+        XCTAssertEqual(status.state, .idle)
+        XCTAssertEqual(actions, [.disableSleep(true), .disableSleep(false)])
+        XCTAssertEqual(LidSleepEngine.secondsUntilNextTick(after: status, state: engine.state), 20)
+        XCTAssertEqual(log.last, "Idle with nothing keeping the Mac awake. Letting it sleep.")
+        tick(now: 1040, idle: true)
+        XCTAssertFalse(actions.contains(.sleepNow))
+        // Still awake a minute later: ask, then once a minute after that.
+        status = tick(now: 1080, idle: true)
+        XCTAssertEqual(status.state, .idle)
+        XCTAssertEqual(actions.last, .sleepNow)
+        tick(now: 1100, idle: true)
+        tick(now: 1120, idle: true)
+        XCTAssertEqual(actions.filter { $0 == .sleepNow }.count, 1)
+        tick(now: 1140, idle: true)
+        XCTAssertEqual(actions.filter { $0 == .sleepNow }.count, 2)
+        // The user is back: hold the flag again, so closing the lid keeps the Mac awake.
+        XCTAssertEqual(tick(now: 1160).state, .armed)
+        XCTAssertEqual(actions.last, .disableSleep(true))
+        XCTAssertNil(engine.state.idleSince)
+    }
+
+    func testAWakeGetsItsOwnMinuteBeforeIdleSleepIsAskedFor() {
+        tick(now: 1000, idle: true)
+        // A gap means the Mac slept. A dark wake that is still idle waits a minute before asking.
+        tick(now: 5000, idle: true)
+        tick(now: 5020, idle: true)
+        XCTAssertFalse(actions.contains(.sleepNow))
+        tick(now: 5060, idle: true)
+        XCTAssertEqual(actions.last, .sleepNow)
+    }
+
+    func testIdleNeverOverridesTheLidClosedRules() {
+        tick()
+        // Closing the lid starts the timer and holds the flag, idle or not.
+        let status = tick(lid: true, now: 1010, idle: true)
+        XCTAssertEqual(status.state, .counting)
+        XCTAssertEqual(engine.state.flag, true)
+        XCTAssertEqual(tick(lid: true, causes: false, now: 1020, idle: true).state, .docked)
+        XCTAssertEqual(engine.state.flag, true)
+        // Low battery wins over idle with the lid open.
+        XCTAssertEqual(tick(now: 1030, battery: 10, idle: true).state, .lowBattery)
+        XCTAssertFalse(actions.contains(.sleepNow))
+    }
+
+    func testIdleSleepIsDueOnlyWhenMacOSWouldSleep() {
+        func due(_ idle: Int? = 600, timer: Int? = 1, assertions: [String: Int]? = [:], battery: Bool = true) -> Bool {
+            LidSleepEngine.idleSleepDue(idleSeconds: idle, sleepTimerMinutes: timer, assertions: assertions, onBattery: battery)
+        }
+        XCTAssertTrue(due())
+        XCTAssertTrue(due(60))
+        XCTAssertFalse(due(59))
+        XCTAssertFalse(due(600, timer: 30))
+        XCTAssertTrue(due(1800, timer: 30))
+        // Never, or anything unknown.
+        XCTAssertFalse(due(timer: 0))
+        XCTAssertFalse(due(nil))
+        XCTAssertFalse(due(timer: nil))
+        XCTAssertFalse(due(assertions: nil))
+        // Anything holding the Mac awake, like caffeinate, a video or the display being on.
+        for name in ["PreventUserIdleSystemSleep", "PreventUserIdleDisplaySleep", "UserIsActive", "BackgroundTask",
+                     "InternalPreventDisplaySleep"] {
+            XCTAssertFalse(due(assertions: [name: 1]), name)
+        }
+        XCTAssertTrue(due(assertions: ["PreventUserIdleSystemSleep": 0, "ExternalMedia": 1, "EnableIdleSleep": 1]))
+        XCTAssertFalse(due(assertions: ["EnableIdleSleep": 0]))
+        // PreventSystemSleep counts only on the power adapter, as it does for macOS.
+        XCTAssertTrue(due(assertions: ["PreventSystemSleep": 1], battery: true))
+        XCTAssertFalse(due(assertions: ["PreventSystemSleep": 1], battery: false))
+    }
+
+    func testTheSleepTimerIsReadFromPmset() {
+        let output = """
+        System-wide power settings:
+         SleepDisabled\t\t1
+        Currently in use:
+         standby              1
+         Sleep On Power Button 1
+         hibernatefile        /var/vm/sleepimage
+         disksleep            10
+         sleep                0 (sleep prevented by coreaudiod, caffeinate, powerd)
+         displaysleep         60 (display sleep prevented by UnrealEditor)
+        """
+        XCTAssertEqual(LidSleepEngine.sleepTimerMinutes(pmsetOutput: output), 0)
+        XCTAssertEqual(LidSleepEngine.sleepTimerMinutes(pmsetOutput: output.replacingOccurrences(of: "sleep                0", with: "sleep                1")), 1)
+        XCTAssertEqual(LidSleepEngine.sleepTimerMinutes(pmsetOutput: "Currently in use:\n sleep\t30\n"), 30)
+        // "Sleep On Power Button" and "displaysleep" are not the timer. Without the section or a number, no answer.
+        XCTAssertNil(LidSleepEngine.sleepTimerMinutes(pmsetOutput: " sleep 1\n"))
+        XCTAssertNil(LidSleepEngine.sleepTimerMinutes(pmsetOutput: "Currently in use:\n Sleep On Power Button 1\n displaysleep 10\n"))
+        XCTAssertNil(LidSleepEngine.sleepTimerMinutes(pmsetOutput: "Currently in use:\n sleep x\n"))
+        XCTAssertNil(LidSleepEngine.sleepTimerMinutes(pmsetOutput: ""))
+    }
+
     func testStatusReadsBackAndRefusesNonsense() throws {
         let status = LidSleepStatus(enabled: true, minutes: 45, state: .counting, remainingSeconds: 90, updatedAt: 1000)
         XCTAssertEqual(String(decoding: status.encoded, as: UTF8.self),
                        #"{"enabled":true,"minutes":45,"remainingSeconds":90,"state":"counting","updatedAt":1000}"# + "\n")
         XCTAssertEqual(LidSleepStatus.decode(status.encoded), status)
-        for state in [LidSleepStatus.State.off, .armed, .counting, .docked, .lowBattery, .slept, .appMissing] {
+        for state in [LidSleepStatus.State.off, .armed, .idle, .counting, .docked, .lowBattery, .slept, .appMissing] {
             let other = LidSleepStatus(enabled: false, minutes: 0, state: state, updatedAt: 5)
             XCTAssertEqual(LidSleepStatus.decode(other.encoded), other)
         }

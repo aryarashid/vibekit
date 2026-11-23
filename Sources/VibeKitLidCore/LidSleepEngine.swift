@@ -8,6 +8,8 @@ public struct LidSleepStatus: Codable, Equatable, Sendable {
         case off
         /// Lid open. The Mac will stay awake when it closes.
         case armed
+        /// Lid open and idle with nothing keeping the Mac awake, so it sleeps as it normally would.
+        case idle
         /// Lid closed and counting down to sleep.
         case counting
         /// Lid closed with an external display. No timer runs.
@@ -69,7 +71,8 @@ public struct LidSleepStatus: Codable, Equatable, Sendable {
 /// The rules, each of which has a test:
 /// - Only the delays the app offers count. Anything else is off.
 /// - Off, or the app is gone: clear `disablesleep` and forget the timer.
-/// - Lid open: hold `disablesleep`, unless the battery is low.
+/// - Lid open: hold `disablesleep`, unless the battery is low, or the Mac is idle and would sleep by
+///   itself. Then let it, and ask for sleep if it has not gone a minute later.
 /// - Lid closed with a display attached: hold `disablesleep`, no timer. Unplugging starts a fresh one.
 /// - Lid closed: turn the display off once, count down, then clear `disablesleep` and sleep.
 ///   Low battery sleeps at once.
@@ -120,9 +123,13 @@ public struct LidSleepEngine: Sendable {
         public var now: Int64?
         public var onBattery: Bool
         public var batteryPercent: Int?
+        /// The user has been idle past the sleep timer for the power source in use, and nothing
+        /// holds the Mac awake. Only `disablesleep` stops it sleeping by itself.
+        public var idleSleepDue: Bool
 
         public init(minutes: Int, appPresent: Bool = true, lidClosed: Bool?, clamshellCausesSleep: Bool?,
-                    sleepDisabled: Bool? = nil, now: Int64?, onBattery: Bool = false, batteryPercent: Int? = nil) {
+                    sleepDisabled: Bool? = nil, now: Int64?, onBattery: Bool = false, batteryPercent: Int? = nil,
+                    idleSleepDue: Bool = false) {
             self.minutes = minutes
             self.appPresent = appPresent
             self.lidClosed = lidClosed
@@ -131,6 +138,7 @@ public struct LidSleepEngine: Sendable {
             self.now = now
             self.onBattery = onBattery
             self.batteryPercent = batteryPercent
+            self.idleSleepDue = idleSleepDue
         }
 
         var lowBattery: Bool {
@@ -154,6 +162,8 @@ public struct LidSleepEngine: Sendable {
         /// The last `disablesleep` value set or seen.
         public var flag: Bool?
         public var lastMinutes: Int?
+        /// When the lid-open Mac was found idle and the flag let go. Kept in memory only.
+        public var idleSince: Int64?
 
         public init() {}
 
@@ -231,6 +241,40 @@ public struct LidSleepEngine: Sendable {
         return ([0] + choices).first { String($0) == text }
     }
 
+    /// Assertion types that keep a Mac with an open lid awake, as `IOPMCopyAssertionsStatus` names
+    /// them. Apps and tools use these to stay awake, and the system holds one while the display is
+    /// on. `PreventSystemSleep` only counts on the power adapter, as it does for macOS.
+    static let awakeAssertions = ["PreventUserIdleSystemSleep", "PreventUserIdleDisplaySleep", "UserIsActive",
+                                  "SystemIsActive", "DisplayWake", "BackgroundTask", "ApplePushServiceTask",
+                                  "InteractivePushServiceTask", "InternalPreventSleep", "InternalPreventDisplaySleep",
+                                  "NetworkClientActive"]
+
+    /// Whether macOS would put the Mac to sleep now if `disablesleep` were off: the user has been
+    /// idle at least as long as the sleep timer for the power source in use, the timer is not
+    /// Never, and nothing holds the Mac awake. Anything unknown counts as no.
+    public static func idleSleepDue(idleSeconds: Int?, sleepTimerMinutes: Int?, assertions: [String: Int]?,
+                                    onBattery: Bool) -> Bool {
+        guard let idleSeconds, let sleepTimerMinutes, let assertions, sleepTimerMinutes > 0,
+              idleSeconds >= sleepTimerMinutes * 60 else { return false }
+        // The system turns this off when something in it must not idle sleep.
+        guard assertions["EnableIdleSleep"] != 0 else { return false }
+        let names = onBattery ? awakeAssertions : awakeAssertions + ["PreventSystemSleep"]
+        return names.allSatisfy { (assertions[$0] ?? 0) == 0 }
+    }
+
+    /// The system sleep timer in minutes from `pmset -g`, for the power source in use. 0 is Never.
+    /// nil if the output has no such line, so the helper never guesses.
+    public static func sleepTimerMinutes(pmsetOutput: String) -> Int? {
+        guard let section = pmsetOutput.range(of: "Currently in use:") else { return nil }
+        for line in pmsetOutput[section.upperBound...].split(separator: "\n") {
+            let words = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            guard words.count >= 2, words[0] == "sleep" else { continue }
+            guard (1...4).contains(words[1].count), words[1].allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+            return Int(words[1])
+        }
+        return nil
+    }
+
     /// Looks at one reading, does what it calls for, and says what state that leaves.
     /// `perform` returns whether the action worked; a sleep that could not be requested is
     /// tried again on the next tick.
@@ -260,7 +304,11 @@ public struct LidSleepEngine: Sendable {
         }
 
         // A gap much longer than one poll means the Mac was asleep in between.
-        if let last = state.lastTick, now - last > Self.sleepGap || now < last { state.slept = true }
+        if let last = state.lastTick, now - last > Self.sleepGap || now < last {
+            state.slept = true
+            // Give a wake its own minute before asking for idle sleep again.
+            state.idleSince = nil
+        }
         // A clock set backwards must not stretch the delay: move the start back by the same step,
         // so the time already spent with the lid closed still counts.
         if let last = state.lastTick, let closed = state.closedAt, now < last {
@@ -276,12 +324,31 @@ public struct LidSleepEngine: Sendable {
             // Holding the flag here would stop the Mac going to sleep by itself with the lid
             // open, and run the battery flat. Let it sleep normally, and at once if the lid closes.
             if inputs.lowBattery {
+                state.idleSince = nil
                 setFlag(false, inputs, perform)
                 return status(.lowBattery)
             }
+            // The flag has to be on before the lid closes, but while it is on the Mac never sleeps
+            // by itself. So when the Mac would sleep now if not for the flag, let go of it. Turning
+            // it off may not restart the system's own idle timer, so ask for sleep a minute later.
+            if inputs.idleSleepDue {
+                setFlag(false, inputs, perform)
+                if let since = state.idleSince {
+                    if now - since >= Self.retryAfter {
+                        if perform(.sleepNow) { log("Requested sleep (idle with the lid open)") }
+                        state.idleSince = now
+                    }
+                } else {
+                    state.idleSince = now
+                    log("Idle with nothing keeping the Mac awake. Letting it sleep.")
+                }
+                return status(.idle)
+            }
+            state.idleSince = nil
             setFlag(true, inputs, perform)
             return status(.armed)
         case (true?, false?):
+            state.idleSince = nil
             if !state.docked { log("Lid closed while docked") }
             // Docking is a fresh start: unplugging later starts a new timer.
             state.closedAt = nil
@@ -290,7 +357,7 @@ public struct LidSleepEngine: Sendable {
             setFlag(true, inputs, perform)
             return status(.docked)
         case (true?, true?):
-            break
+            state.idleSince = nil
         default:
             // Sleep normally if the sensor is unavailable.
             setFlag(false, inputs, perform)
@@ -356,6 +423,9 @@ public struct LidSleepEngine: Sendable {
             return min(remaining, heartbeat)
         case .slept:
             return state.slept ? heartbeat : retryPoll
+        case .idle:
+            // Notice the user coming back soon, and keep ticks well under `sleepGap`.
+            return retryPoll
         case .lowBattery:
             return state.closedAt == nil ? heartbeat : 10
         case .appMissing:
