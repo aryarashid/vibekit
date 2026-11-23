@@ -232,24 +232,26 @@ final class LidSleepEngineTests: XCTestCase {
 
     func testTheSleepTimerIsReadFromPmset() {
         let output = """
-        System-wide power settings:
-         SleepDisabled\t\t1
-        Currently in use:
-         standby              1
+        Battery Power:
          Sleep On Power Button 1
-         hibernatefile        /var/vm/sleepimage
+         powermode            1
+         displaysleep         10
+         sleep                1
          disksleep            10
-         sleep                0 (sleep prevented by coreaudiod, caffeinate, powerd)
-         displaysleep         60 (display sleep prevented by UnrealEditor)
+        AC Power:
+         Sleep On Power Button 1
+         displaysleep         60
+         sleep                0
         """
-        XCTAssertEqual(LidSleepEngine.sleepTimerMinutes(pmsetOutput: output), 0)
-        XCTAssertEqual(LidSleepEngine.sleepTimerMinutes(pmsetOutput: output.replacingOccurrences(of: "sleep                0", with: "sleep                1")), 1)
-        XCTAssertEqual(LidSleepEngine.sleepTimerMinutes(pmsetOutput: "Currently in use:\n sleep\t30\n"), 30)
-        // "Sleep On Power Button" and "displaysleep" are not the timer. Without the section or a number, no answer.
-        XCTAssertNil(LidSleepEngine.sleepTimerMinutes(pmsetOutput: " sleep 1\n"))
-        XCTAssertNil(LidSleepEngine.sleepTimerMinutes(pmsetOutput: "Currently in use:\n Sleep On Power Button 1\n displaysleep 10\n"))
-        XCTAssertNil(LidSleepEngine.sleepTimerMinutes(pmsetOutput: "Currently in use:\n sleep x\n"))
-        XCTAssertNil(LidSleepEngine.sleepTimerMinutes(pmsetOutput: ""))
+        XCTAssertEqual(LidSleepEngine.sleepTimerMinutes(pmsetCustom: output, onBattery: true), 1)
+        XCTAssertEqual(LidSleepEngine.sleepTimerMinutes(pmsetCustom: output, onBattery: false), 0)
+        XCTAssertEqual(LidSleepEngine.sleepTimerMinutes(pmsetCustom: "AC Power:\n\tsleep\t30\n", onBattery: false), 30)
+        // Only the named section counts, and "displaysleep" or "Sleep On Power Button" are not the timer.
+        XCTAssertNil(LidSleepEngine.sleepTimerMinutes(pmsetCustom: "AC Power:\n sleep 5\n", onBattery: true))
+        XCTAssertNil(LidSleepEngine.sleepTimerMinutes(pmsetCustom: "Battery Power:\n Sleep On Power Button 1\n displaysleep 10\n", onBattery: true))
+        XCTAssertNil(LidSleepEngine.sleepTimerMinutes(pmsetCustom: "Battery Power:\n sleep x\n", onBattery: true))
+        XCTAssertNil(LidSleepEngine.sleepTimerMinutes(pmsetCustom: " sleep 1\n", onBattery: true))
+        XCTAssertNil(LidSleepEngine.sleepTimerMinutes(pmsetCustom: "", onBattery: true))
     }
 
     func testStatusReadsBackAndRefusesNonsense() throws {

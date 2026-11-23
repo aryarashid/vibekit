@@ -67,16 +67,16 @@ struct HelperSystem: Sendable {
     }
 
     /// Whether macOS would sleep now if `disablesleep` were off. The cheap readings come first, so
-    /// `pmset -g` only runs once the user is away and nothing holds the Mac awake.
+    /// `pmset -g custom` only runs once the user is away and nothing holds the Mac awake.
     private static func idleSleepDue(onBattery: Bool) -> Bool {
         guard let idle = hidIdleSeconds(), idle >= 60 else { return false }
         var status: Unmanaged<CFDictionary>?
         guard IOPMCopyAssertionsStatus(&status) == kIOReturnSuccess,
               let assertions = status?.takeRetainedValue() as? [String: Int],
               LidSleepEngine.idleSleepDue(idleSeconds: idle, sleepTimerMinutes: 1, assertions: assertions, onBattery: onBattery),
-              let output = capture("/usr/bin/pmset", ["-g"]) else { return false }
-        return LidSleepEngine.idleSleepDue(idleSeconds: idle, sleepTimerMinutes: LidSleepEngine.sleepTimerMinutes(pmsetOutput: output),
-                                           assertions: assertions, onBattery: onBattery)
+              let output = capture("/usr/bin/pmset", ["-g", "custom"]) else { return false }
+        let timer = LidSleepEngine.sleepTimerMinutes(pmsetCustom: output, onBattery: onBattery)
+        return LidSleepEngine.idleSleepDue(idleSeconds: idle, sleepTimerMinutes: timer, assertions: assertions, onBattery: onBattery)
     }
 
     /// Seconds since the last keyboard, mouse or trackpad input.

@@ -262,11 +262,19 @@ public struct LidSleepEngine: Sendable {
         return names.allSatisfy { (assertions[$0] ?? 0) == 0 }
     }
 
-    /// The system sleep timer in minutes from `pmset -g`, for the power source in use. 0 is Never.
-    /// nil if the output has no such line, so the helper never guesses.
-    public static func sleepTimerMinutes(pmsetOutput: String) -> Int? {
-        guard let section = pmsetOutput.range(of: "Currently in use:") else { return nil }
-        for line in pmsetOutput[section.upperBound...].split(separator: "\n") {
+    /// The system sleep timer in minutes from `pmset -g custom`, for the battery or the power
+    /// adapter. 0 is Never. These are the saved settings, so `disablesleep` cannot hide them. nil if
+    /// the output has no such line, so the helper never guesses.
+    public static func sleepTimerMinutes(pmsetCustom output: String, onBattery: Bool) -> Int? {
+        let header = onBattery ? "Battery Power:" : "AC Power:"
+        var inSection = false
+        for line in output.split(separator: "\n") {
+            // Section headers start at the margin. Settings are indented under them.
+            if let first = line.first, first != " " && first != "\t" {
+                inSection = line.trimmingCharacters(in: .whitespaces) == header
+                continue
+            }
+            guard inSection else { continue }
             let words = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
             guard words.count >= 2, words[0] == "sleep" else { continue }
             guard (1...4).contains(words[1].count), words[1].allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
