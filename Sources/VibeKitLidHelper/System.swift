@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import IOKit
 import IOKit.ps
+import IOKit.pwr_mgt
 import VibeKitLidCore
 import os
 
@@ -52,14 +53,40 @@ struct HelperSystem: Sendable {
                 minutes: minutes, appPresent: appPresent(),
                 lidClosed: yesNo("lid"), clamshellCausesSleep: yesNo("causes"), sleepDisabled: yesNo("sleepdisabled"),
                 now: Self.digits(word("now"), upTo: 12),
-                onBattery: word("power") == "Battery", batteryPercent: Self.digits(word("percent"), upTo: 3).map(Int.init))
+                onBattery: word("power") == "Battery", batteryPercent: Self.digits(word("percent"), upTo: 3).map(Int.init),
+                idleSleepDue: yesNo("idle") == true)
         }
         let lid = Self.readLid()
         let battery = Self.readBattery()
+        // Only an open lid needs to know, and only while a delay is set.
+        let idle = minutes > 0 && lid.closed == false && Self.idleSleepDue(onBattery: battery.onBattery)
         return LidSleepEngine.Inputs(
             minutes: minutes, appPresent: appPresent(),
             lidClosed: lid.closed, clamshellCausesSleep: lid.causesSleep, sleepDisabled: lid.sleepDisabled,
-            now: Int64(time(nil)), onBattery: battery.onBattery, batteryPercent: battery.percent)
+            now: Int64(time(nil)), onBattery: battery.onBattery, batteryPercent: battery.percent, idleSleepDue: idle)
+    }
+
+    /// Whether macOS would sleep now if `disablesleep` were off. The cheap readings come first, so
+    /// `pmset -g custom` only runs once the user is away and nothing holds the Mac awake.
+    private static func idleSleepDue(onBattery: Bool) -> Bool {
+        guard let idle = hidIdleSeconds(), idle >= 60 else { return false }
+        var status: Unmanaged<CFDictionary>?
+        guard IOPMCopyAssertionsStatus(&status) == kIOReturnSuccess,
+              let assertions = status?.takeRetainedValue() as? [String: Int],
+              LidSleepEngine.idleSleepDue(idleSeconds: idle, sleepTimerMinutes: 1, assertions: assertions, onBattery: onBattery),
+              let output = capture("/usr/bin/pmset", ["-g", "custom"]) else { return false }
+        let timer = LidSleepEngine.sleepTimerMinutes(pmsetCustom: output, onBattery: onBattery)
+        return LidSleepEngine.idleSleepDue(idleSeconds: idle, sleepTimerMinutes: timer, assertions: assertions, onBattery: onBattery)
+    }
+
+    /// Seconds since the last keyboard, mouse or trackpad input.
+    private static func hidIdleSeconds() -> Int? {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOHIDSystem"))
+        guard service != 0 else { return nil }
+        defer { IOObjectRelease(service) }
+        guard let value = IORegistryEntryCreateCFProperty(service, "HIDIdleTime" as CFString, kCFAllocatorDefault, 0)?
+            .takeRetainedValue() as? NSNumber else { return nil }
+        return Int(value.uint64Value / 1_000_000_000)
     }
 
     /// The path in the app file, if it names one. Used to watch the app for being moved away.
@@ -131,6 +158,33 @@ struct HelperSystem: Sendable {
 
     /// Runs a system tool and waits for it. True only if it exited with 0.
     private static func run(_ path: String, _ arguments: [String]) -> Bool {
+        spawn(path, arguments, output: nil)
+    }
+
+    /// Runs a system tool and returns what it printed, if it exited with 0. Only for tools that
+    /// print a little: the pipe is read after the tool exits, and a tool that fills the pipe
+    /// gets an error instead of waiting forever.
+    private static func capture(_ path: String, _ arguments: [String]) -> String? {
+        var ends: [Int32] = [0, 0]
+        guard pipe(&ends) == 0 else { return nil }
+        let reader = ends[0], writer = ends[1]
+        defer { close(reader) }
+        _ = fcntl(reader, F_SETFD, FD_CLOEXEC)
+        _ = fcntl(reader, F_SETFL, O_NONBLOCK)
+        _ = fcntl(writer, F_SETFL, O_NONBLOCK)
+        let ok = spawn(path, arguments, output: writer)
+        close(writer)
+        guard ok else { return nil }
+        var output: [UInt8] = []
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while output.count < 65_536 {
+            let count = read(reader, &buffer, buffer.count)
+            if count > 0 { output += buffer[0..<count] } else if count < 0 && errno == EINTR { continue } else { break }
+        }
+        return String(decoding: output, as: UTF8.self)
+    }
+
+    private static func spawn(_ path: String, _ arguments: [String], output: Int32?) -> Bool {
         let argv: [UnsafeMutablePointer<CChar>?] = ([path] + arguments).map { strdup($0) } + [nil]
         let envp: [UnsafeMutablePointer<CChar>?] = [strdup("PATH=/usr/bin:/bin:/usr/sbin:/sbin"), strdup("LC_ALL=C"), nil]
         defer { (argv + envp).forEach { free($0) } }
@@ -145,8 +199,16 @@ struct HelperSystem: Sendable {
         posix_spawnattr_setsigdefault(&attributes, &defaults)
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSIGDEF))
 
+        var actions: posix_spawn_file_actions_t?
+        guard posix_spawn_file_actions_init(&actions) == 0 else { return false }
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        if let output {
+            posix_spawn_file_actions_adddup2(&actions, output, STDOUT_FILENO)
+            posix_spawn_file_actions_addclose(&actions, output)
+        }
+
         var pid: pid_t = 0
-        guard posix_spawn(&pid, path, nil, &attributes, argv, envp) == 0 else { return false }
+        guard posix_spawn(&pid, path, &actions, &attributes, argv, envp) == 0 else { return false }
         var status: Int32 = 0
         while waitpid(pid, &status, 0) < 0 {
             guard errno == EINTR else { return false }

@@ -365,6 +365,20 @@ final class LidSleepHelperTests: XCTestCase {
         XCTAssertEqual(try status().state, .armed)
     }
 
+    func testAnIdleMacWithTheLidOpenIsLetGo() throws {
+        try runHelper()
+        try write("idle", "Yes")
+        try write("now", "1020")
+        try runHelper()
+        XCTAssertEqual(try lines(), ["disablesleep 1", "disablesleep 0"])
+        XCTAssertEqual(try status().state, .idle)
+        try write("idle", "No")
+        try write("now", "1040")
+        try runHelper()
+        XCTAssertEqual(try lines(), ["disablesleep 1", "disablesleep 0", "disablesleep 1"])
+        XCTAssertEqual(try status().state, .armed)
+    }
+
     func testStatusFileSaysWhatTheHelperIsDoing() throws {
         try runHelper()
         XCTAssertEqual(try status(), LidSleepStatus(enabled: true, minutes: 45, state: .armed, updatedAt: 1000))
