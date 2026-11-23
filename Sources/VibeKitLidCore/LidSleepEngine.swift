@@ -243,11 +243,12 @@ public struct LidSleepEngine: Sendable {
 
     /// Assertion types that keep a Mac with an open lid awake, as `IOPMCopyAssertionsStatus` names
     /// them. Apps and tools use these to stay awake, and the system holds one while the display is
-    /// on. `PreventSystemSleep` only counts on the power adapter, as it does for macOS.
-    static let awakeAssertions = ["PreventUserIdleSystemSleep", "PreventUserIdleDisplaySleep", "UserIsActive",
-                                  "SystemIsActive", "DisplayWake", "BackgroundTask", "ApplePushServiceTask",
-                                  "InteractivePushServiceTask", "InternalPreventSleep", "InternalPreventDisplaySleep",
-                                  "NetworkClientActive"]
+    /// on. `PreventSystemSleep` counts on battery too: its owner can ask for it to hold there, and
+    /// the totals do not say which ones did, so the helper stays on the side of keeping the Mac awake.
+    static let awakeAssertions = ["PreventUserIdleSystemSleep", "PreventUserIdleDisplaySleep", "PreventSystemSleep",
+                                  "UserIsActive", "SystemIsActive", "DisplayWake", "BackgroundTask",
+                                  "ApplePushServiceTask", "InteractivePushServiceTask", "SoftwareUpdateTask",
+                                  "InternalPreventSleep", "InternalPreventDisplaySleep", "NetworkClientActive"]
 
     /// Whether macOS would put the Mac to sleep now if `disablesleep` were off: the user has been
     /// idle at least as long as the sleep timer for the power source in use, the timer is not
@@ -258,8 +259,7 @@ public struct LidSleepEngine: Sendable {
               idleSeconds >= sleepTimerMinutes * 60 else { return false }
         // The system turns this off when something in it must not idle sleep.
         guard assertions["EnableIdleSleep"] != 0 else { return false }
-        let names = onBattery ? awakeAssertions : awakeAssertions + ["PreventSystemSleep"]
-        return names.allSatisfy { (assertions[$0] ?? 0) == 0 }
+        return awakeAssertions.allSatisfy { (assertions[$0] ?? 0) == 0 }
     }
 
     /// The system sleep timer in minutes from `pmset -g custom`, for the battery or the power

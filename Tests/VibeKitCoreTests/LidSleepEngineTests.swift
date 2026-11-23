@@ -220,13 +220,13 @@ final class LidSleepEngineTests: XCTestCase {
         XCTAssertFalse(due(assertions: nil))
         // Anything holding the Mac awake, like caffeinate, a video or the display being on.
         for name in ["PreventUserIdleSystemSleep", "PreventUserIdleDisplaySleep", "UserIsActive", "BackgroundTask",
-                     "InternalPreventDisplaySleep"] {
+                     "InternalPreventDisplaySleep", "SoftwareUpdateTask"] {
             XCTAssertFalse(due(assertions: [name: 1]), name)
         }
         XCTAssertTrue(due(assertions: ["PreventUserIdleSystemSleep": 0, "ExternalMedia": 1, "EnableIdleSleep": 1]))
         XCTAssertFalse(due(assertions: ["EnableIdleSleep": 0]))
-        // PreventSystemSleep counts only on the power adapter, as it does for macOS.
-        XCTAssertTrue(due(assertions: ["PreventSystemSleep": 1], battery: true))
+        // PreventSystemSleep counts on battery too, since its owner can ask for that.
+        XCTAssertFalse(due(assertions: ["PreventSystemSleep": 1], battery: true))
         XCTAssertFalse(due(assertions: ["PreventSystemSleep": 1], battery: false))
     }
 
