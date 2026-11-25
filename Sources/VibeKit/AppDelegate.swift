@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let hotKey = HotKey()
     private let updater = Updater.shared
+    private lazy var hotspotRescue = HotspotRescue(settings: settings)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -33,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.refreshLidStayAwakeLazily()
         applyHotKey()
         observeSettings()
+        hotspotRescue.start()
         // `VibeKit --toggle` opens or closes the panel of the running copy, for scripts and launchers.
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(toggleRequested), name: AppDelegate.toggleNotification, object: nil)
@@ -81,12 +83,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             _ = settings.promptsHotKeyEnabled
             _ = settings.showCountInMenuBar
             _ = settings.showOtherListeners
+            _ = settings.hotspotRescue
+            _ = settings.lidStayAwake
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.applyHotKey()
                 self.updateStatusItem(count: self.store.devServers.count)
                 self.store.settingsChanged()
+                self.hotspotRescue.update()
                 self.observeSettings()
             }
         }
