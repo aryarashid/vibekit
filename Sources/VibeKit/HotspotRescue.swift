@@ -29,9 +29,9 @@ final class HotspotRescue {
     /// Set while an attempt runs. Raising it tells the attempt to stop before it turns the
     /// hotspot on or joins it.
     private var inFlight: StopFlag?
-    /// The Wi-Fi channel of the hotspot Vibe Kit joined, and a timer that notices when the Mac
+    /// What can be seen of the hotspot Vibe Kit joined, and a timer that notices when the Mac
     /// is no longer on it.
-    private var joinedChannel: Int?
+    private var joinedLink: WiFiLink?
     private var joinedWatch: Timer?
     private var notifyPort: IONotificationPortRef?
     private var notification: io_object_t = 0
@@ -84,14 +84,14 @@ final class HotspotRescue {
             let outcome = PersonalHotspot.connect(stillNeeded: {
                 !stop.isSet && HotspotRescuePolicy.isNeeded(Self.readInputs(minimumSecondsLeft: 1))
             })
-            let channel = outcome == .joined ? CWWiFiClient.shared().interface()?.wlanChannel()?.channelNumber : nil
+            let link = outcome == .joined ? Self.readLink(CWWiFiClient.shared().interface()) : nil
             Task { @MainActor [weak self] in
                 NSLog("Vibe Kit: hotspot try \(attempt): \(outcome)")
                 guard let self, self.inFlight === stop else { return }
                 self.inFlight = nil
                 self.policy.attemptEnded(at: Date())
                 switch outcome {
-                case .joined: self.joined(channel: channel)
+                case .joined: self.joined(link: link)
                 // Wi-Fi came back or the lid opened, so a later drop is a new outage and should
                 // not wait out this one's backoff.
                 case .stopped: self.policy = HotspotRescuePolicy()
@@ -103,9 +103,9 @@ final class HotspotRescue {
 
     // MARK: After a join
 
-    private func joined(channel: Int?) {
+    private func joined(link: WiFiLink?) {
         settings.hotspotJoinedAt = Date()
-        joinedChannel = channel
+        joinedLink = link
         guard joinedWatch == nil else { return }
         let watch = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkStillJoined() }
@@ -116,16 +116,17 @@ final class HotspotRescue {
     }
 
     /// The network name is hidden without Location access, so leaving shows up as Wi-Fi
-    /// dropping or moving to another channel.
+    /// dropping, or a new channel, router or address.
     private func checkStillJoined() {
         let wifi = CWWiFiClient.shared().interface()
-        let channel = wifi?.wlanChannel()?.channelNumber
-        if !Self.wifiAssociated(wifi) || (joinedChannel != nil && channel != joinedChannel) { forgetJoin() }
+        let current = Self.readLink(wifi)
+        guard Self.wifiAssociated(wifi), joinedLink?.matches(current) ?? true else { return forgetJoin() }
+        joinedLink = joinedLink?.learning(from: current) ?? current
     }
 
     private func forgetJoin() {
         settings.hotspotJoinedAt = nil
-        joinedChannel = nil
+        joinedLink = nil
         joinedWatch?.invalidate()
         joinedWatch = nil
     }
@@ -152,6 +153,17 @@ final class HotspotRescue {
     nonisolated static func wifiAssociated(_ wifi: CWInterface?) -> Bool {
         guard let wifi else { return false }
         return wifi.rssiValue() != 0 || wifi.wlanChannel() != nil
+    }
+
+    nonisolated static func readLink(_ wifi: CWInterface?) -> WiFiLink {
+        let name = wifi?.interfaceName
+        let keys = (SCDynamicStoreCopyKeyList(nil, "State:/Network/Service/.*/IPv4" as CFString) as? [String]) ?? []
+        let service = keys.lazy
+            .compactMap { SCDynamicStoreCopyValue(nil, $0 as CFString) as? [String: Any] }
+            .first { $0["InterfaceName"] as? String == name }
+        return WiFiLink(channel: wifi?.wlanChannel()?.channelNumber,
+                        router: service?["Router"] as? String,
+                        address: (service?["Addresses"] as? [String])?.first)
     }
 
     nonisolated static func lidClosed() -> Bool {

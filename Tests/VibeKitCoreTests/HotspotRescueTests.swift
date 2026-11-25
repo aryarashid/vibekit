@@ -67,3 +67,22 @@ final class HotspotRescueTests: XCTestCase {
         XCTAssertEqual(HotspotDevice.pick([.init(group: 1, signal: nil), .init(group: 1, signal: nil)]), 0, "ties keep the first")
     }
 }
+
+final class WiFiLinkTests: XCTestCase {
+    func testSwitchingToANetworkOnTheSameChannelCountsAsLeaving() {
+        let hotspot = WiFiLink(channel: 6, router: "192.0.0.1", address: "192.0.0.2")
+        XCTAssertTrue(hotspot.matches(hotspot))
+        XCTAssertFalse(hotspot.matches(WiFiLink(channel: 6, router: "192.168.1.1", address: "192.168.1.20")))
+        XCTAssertFalse(hotspot.matches(WiFiLink(channel: 36, router: "192.0.0.1", address: "192.0.0.2")))
+    }
+
+    func testPartsNotKnownYetAreLearnedNotTreatedAsLeaving() {
+        let atJoin = WiFiLink(channel: 6, router: nil, address: nil)
+        let afterDHCP = WiFiLink(channel: 6, router: "192.0.0.1", address: "192.0.0.2")
+        XCTAssertTrue(atJoin.matches(afterDHCP))
+        let learned = atJoin.learning(from: afterDHCP)
+        XCTAssertEqual(learned, afterDHCP)
+        XCTAssertTrue(learned.matches(WiFiLink(channel: 6, router: nil, address: nil)), "mid-handover reads are skipped")
+        XCTAssertFalse(learned.matches(WiFiLink(channel: 6, router: "10.0.0.1", address: "10.0.0.5")))
+    }
+}
