@@ -150,6 +150,10 @@ struct SettingsPage: View {
         }
         .padding(.horizontal, 10)
         .frame(minHeight: 32)
+        if settings.lidStayAwake {
+            toggle("Reconnect to my iPhone's hotspot", isOn: Binding(
+                get: { settings.hotspotRescue }, set: { settings.hotspotRescue = $0 }))
+        }
         Group {
             if let error = settings.lidHelperError {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -173,7 +177,8 @@ struct SettingsPage: View {
                         .disabled(settings.lidHelperBusy)
                 }
             } else if settings.lidStayAwake {
-                lidNotice("The screen turns off when the lid closes, and work keeps running until the time is up. It sleeps right away at 15% battery or less (open or closed), and stays awake while docked to a display.")
+                lidNotice("The screen turns off when the lid closes, and work keeps running until the time is up. It sleeps right away at 15% battery or less (open or closed), and stays awake while docked to a display."
+                    + (settings.hotspotRescue ? " If Wi-Fi drops while the lid is closed, Vibe Kit turns on your own iPhone's hotspot and joins it." : ""))
             } else if settings.lidHelperInstalled {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text("Off. The helper is installed but does nothing.")

@@ -224,4 +224,18 @@ final class SettingsTests: XCTestCase {
         XCTAssertFalse(reloaded.restoreClipboardAfterPaste)
         XCTAssertEqual(reloaded.skippedHTTPChecks, ["/tmp/app\u{0}npm run dev", "worker:9000"])
     }
+
+    @MainActor func testHotspotReconnectIsOnByDefault() {
+        let defaults = UserDefaults(suiteName: "vibekit.tests.hotspot.\(UUID().uuidString)")!
+        XCTAssertTrue(Settings(defaults: defaults).hotspotRescue)
+        defaults.set(false, forKey: "hotspotRescue")
+        XCTAssertFalse(Settings(defaults: defaults).hotspotRescue)
+    }
+
+    func testOnlyAWiredInterfaceOtherThanWiFiCountsAsOnline() {
+        XCTAssertTrue(HotspotRescue.isWired(primary: "en7", wifiName: "en0"))
+        XCTAssertFalse(HotspotRescue.isWired(primary: "en0", wifiName: "en0"))
+        XCTAssertFalse(HotspotRescue.isWired(primary: "utun4", wifiName: "en0"), "a VPN can stay primary with nothing under it")
+        XCTAssertTrue(HotspotRescue.isWired(primary: "en0", wifiName: "en1"))
+    }
 }

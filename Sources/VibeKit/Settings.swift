@@ -29,6 +29,9 @@ final class Settings {
     private(set) var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
     /// How long the Mac stays awake after the lid closes, when that is on. Kept while it is off.
     var lidSleepMinutes: Int { didSet { defaults.set(lidSleepMinutes, forKey: "lidSleepMinutes") } }
+    /// While the Mac stays awake with the lid closed, turn on your iPhone's hotspot and join it
+    /// when Wi-Fi drops. See `HotspotRescue`.
+    var hotspotRescue: Bool { didSet { defaults.set(hotspotRescue, forKey: "hotspotRescue") } }
     /// Whether a lid sleep helper is running with a delay set, so the Mac really does stay
     /// awake after the lid closes. Read from the system, not saved.
     private(set) var lidStayAwake = false
@@ -55,6 +58,7 @@ final class Settings {
             "hotKeyEnabled": true,
             "promptsHotKeyEnabled": true,
             "restoreClipboardAfterPaste": true,
+            "hotspotRescue": true,
         ])
         showOtherListeners = defaults.bool(forKey: "showOtherListeners")
         showCountInMenuBar = defaults.bool(forKey: "showCountInMenuBar")
@@ -62,6 +66,7 @@ final class Settings {
         promptsHotKeyEnabled = defaults.bool(forKey: "promptsHotKeyEnabled")
         pasteOnUse = defaults.bool(forKey: "pasteOnUse")
         restoreClipboardAfterPaste = defaults.bool(forKey: "restoreClipboardAfterPaste")
+        hotspotRescue = defaults.bool(forKey: "hotspotRescue")
         skippedHTTPChecks = Set(defaults.stringArray(forKey: "skippedHTTPChecks") ?? [])
         lastTab = defaults.string(forKey: "lastTab").flatMap(PanelTab.init(rawValue:)) ?? .servers
         editorID = defaults.string(forKey: "editorID")
