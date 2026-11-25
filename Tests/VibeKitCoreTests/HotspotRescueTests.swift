@@ -31,6 +31,14 @@ final class HotspotRescueTests: XCTestCase {
         XCTAssertEqual(HotspotRescuePolicy.retryDelay(afterAttempts: 9), 300)
     }
 
+    func testTheWaitStartsWhenASlowAttemptEnds() {
+        XCTAssertFalse(ask(at: 0))
+        XCTAssertTrue(ask(at: 20))
+        policy.attemptEnded(at: start.addingTimeInterval(80))
+        XCTAssertFalse(ask(at: 130), "a full minute after the attempt ended, not after it began")
+        XCTAssertTrue(ask(at: 140))
+    }
+
     func testNeverAsksWithTheLidOpenOrWiFiSwitchedOffOrAWiredNetwork() {
         for (lid, wifiOn, associated, wired) in [(false, true, false, false), (true, false, false, false),
                                                  (true, true, true, false), (true, true, false, true)] {

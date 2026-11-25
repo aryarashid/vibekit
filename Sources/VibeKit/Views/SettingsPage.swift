@@ -178,7 +178,7 @@ struct SettingsPage: View {
                 }
             } else if settings.lidStayAwake {
                 lidNotice("The screen turns off when the lid closes, and work keeps running until the time is up. It sleeps right away at 15% battery or less (open or closed), and stays awake while docked to a display."
-                    + (settings.hotspotRescue ? " If Wi-Fi drops while the lid is closed, Vibe Kit turns on your own iPhone's hotspot and joins it." : ""))
+                    + (settings.hotspotRescue ? " If no Wi-Fi network is joined while the lid is closed, Vibe Kit turns on your own iPhone's hotspot and joins it, using its cellular data." : ""))
             } else if settings.lidHelperInstalled {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text("Off. The helper is installed but does nothing.")
@@ -194,6 +194,20 @@ struct SettingsPage: View {
         .font(Theme.metaFont)
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
+        if let joinedAt = settings.hotspotJoinedAt {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                lidNotice("On your iPhone's hotspot, using its cellular data. Vibe Kit joined it at \(joinedAt.formatted(date: .omitted, time: .shortened)) while the lid was closed. macOS stays on it until you pick another network.")
+                Spacer(minLength: 0)
+                Button("Wi-Fi Settings") { openWiFiSettings() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.violet)
+                    .fontWeight(.semibold)
+                    .help("Opens Wi-Fi in System Settings, where you can pick your usual network")
+            }
+            .font(Theme.metaFont)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+        }
     }
 
     @ViewBuilder private var cliRows: some View {
@@ -308,6 +322,12 @@ struct SettingsPage: View {
             Text(text)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func openWiFiSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.wifi-settings-extension") {
+            NSWorkspace.shared.open(url)
         }
     }
 

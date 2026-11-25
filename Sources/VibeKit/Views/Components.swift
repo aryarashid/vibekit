@@ -299,6 +299,24 @@ struct KeyCap: View {
     }
 }
 
+/// Footer icon shown while the Mac is on the iPhone hotspot Vibe Kit joined with the lid closed,
+/// so a Mac back in range of your usual Wi-Fi is not left on cellular unnoticed.
+struct HotspotIndicator: View {
+    let settings: Settings
+    let openSettings: () -> Void
+
+    var body: some View {
+        Button(action: openSettings) {
+            Image(systemName: "personalhotspot")
+                .font(.system(size: 10.5, weight: .medium))
+                .frame(width: 22, height: 22)
+        }
+        .buttonStyle(PanelButtonStyle(ink: Theme.warning, hoverInk: Theme.warning, tint: Theme.warning))
+        .help("On your iPhone's hotspot, joined by Vibe Kit while the lid was closed. Click to open Settings.")
+        .accessibilityLabel("On your iPhone's hotspot")
+    }
+}
+
 /// Quiet footer icon shown only while lid stay-awake is active or paused.
 struct LidSleepIndicator: View {
     let settings: Settings

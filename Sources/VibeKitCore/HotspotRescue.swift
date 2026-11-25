@@ -51,6 +51,12 @@ public struct HotspotRescuePolicy: Sendable, Equatable {
         return true
     }
 
+    /// Call when an attempt finishes. A failed one can take a minute or more, so the wait before
+    /// the next starts from here, not from when the attempt began.
+    public mutating func attemptEnded(at date: Date) {
+        if attempts > 0 { lastAttempt = date }
+    }
+
     /// Whether the Mac is in the state the hotspot is for: lid closed and held awake, Wi-Fi on
     /// but not joined, and no wired network. An attempt in progress asks this again before it
     /// turns the hotspot on and before each join.
