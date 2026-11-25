@@ -10,9 +10,17 @@ import VibeKitCore
 /// It only runs while the lid is closed and the lid helper is keeping the Mac awake. While the
 /// lid is closed it also stops App Nap from stretching its timer, since the app has no window
 /// open then and macOS would otherwise let it check only now and then.
+///
+/// After a join it keeps `Settings.hotspotJoinedAt` set while the Mac stays on that hotspot, so
+/// the panel can say so. macOS then prefers the hotspot over your usual Wi-Fi until the phone
+/// stops sharing, and turning Wi-Fi off and on goes straight back to it, so Settings points you
+/// to the Wi-Fi settings to pick your network.
 @MainActor
 final class HotspotRescue {
     static let checkInterval: TimeInterval = 10
+    /// Asking the phone and joining takes up to a minute or so, so it is not worth starting with
+    /// less than this left before the Mac sleeps.
+    static let minimumSecondsLeft = 120
 
     private let settings: Settings
     private var policy = HotspotRescuePolicy()
@@ -21,8 +29,15 @@ final class HotspotRescue {
     /// Set while an attempt runs. Raising it tells the attempt to stop before it turns the
     /// hotspot on or joins it.
     private var inFlight: StopFlag?
+    /// What can be seen of the hotspot Vibe Kit joined, and a timer that notices when the Mac
+    /// is no longer on it.
+    private var joinedLink: WiFiLink?
+    private var joinedWatch: Timer?
     private var notifyPort: IONotificationPortRef?
     private var notification: io_object_t = 0
+    /// The attempt blocks for up to a couple of minutes, so it gets its own thread rather than
+    /// one of Swift's shared task threads.
+    private static let queue = DispatchQueue(label: "dev.vibekit.hotspot-rescue", qos: .utility)
 
     init(settings: Settings) {
         self.settings = settings
@@ -36,7 +51,7 @@ final class HotspotRescue {
 
     /// Call when the setting changes.
     func update() {
-        let active = settings.hotspotRescue && Self.lidClosed() && LidSleep.readStatus()?.enabled == true
+        let active = settings.hotspotRescue && settings.lidStayAwake && Self.lidClosed()
         if active, timer == nil {
             activity = ProcessInfo.processInfo.beginActivity(
                 options: .userInitiatedAllowingIdleSystemSleep, reason: "Reconnecting to your iPhone's hotspot with the lid closed")
@@ -59,41 +74,96 @@ final class HotspotRescue {
 
     private func check() {
         guard inFlight == nil else { return }
-        guard policy.shouldAttempt(Self.readInputs()) else { return }
+        guard policy.shouldAttempt(Self.readInputs(minimumSecondsLeft: Self.minimumSecondsLeft)) else { return }
         let stop = StopFlag()
         inFlight = stop
         let attempt = policy.attempts
         NSLog("Vibe Kit: Wi-Fi is down with the lid closed, asking your iPhone for its hotspot (try \(attempt))")
-        Task.detached(priority: .utility) {
+        Self.queue.async {
             // The setting going off is caught by `stop`; everything else is read fresh.
             let outcome = PersonalHotspot.connect(stillNeeded: {
-                !stop.isSet && HotspotRescuePolicy.isNeeded(Self.readInputs())
+                !stop.isSet && HotspotRescuePolicy.isNeeded(Self.readInputs(minimumSecondsLeft: 1))
             })
-            await MainActor.run { [weak self] in
+            let link = outcome == .joined ? Self.readLink(CWWiFiClient.shared().interface()) : nil
+            Task { @MainActor [weak self] in
                 NSLog("Vibe Kit: hotspot try \(attempt): \(outcome)")
                 guard let self, self.inFlight === stop else { return }
                 self.inFlight = nil
+                self.policy.attemptEnded(at: Date())
+                switch outcome {
+                case .joined: self.joined(link: link)
                 // Wi-Fi came back or the lid opened, so a later drop is a new outage and should
                 // not wait out this one's backoff.
-                if outcome == .stopped { self.policy = HotspotRescuePolicy() }
+                case .stopped: self.policy = HotspotRescuePolicy()
+                default: break
+                }
             }
         }
     }
 
+    // MARK: After a join
+
+    private func joined(link: WiFiLink?) {
+        settings.hotspotJoinedAt = Date()
+        joinedLink = link
+        guard joinedWatch == nil else { return }
+        let watch = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkStillJoined() }
+        }
+        watch.tolerance = 5
+        RunLoop.main.add(watch, forMode: .common)
+        joinedWatch = watch
+    }
+
+    /// The network name is hidden without Location access, so leaving shows up as Wi-Fi
+    /// dropping, or a new channel, router or address.
+    private func checkStillJoined() {
+        let wifi = CWWiFiClient.shared().interface()
+        let current = Self.readLink(wifi)
+        guard Self.wifiAssociated(wifi), joinedLink?.matches(current) ?? true else { return forgetJoin() }
+        joinedLink = joinedLink?.learning(from: current) ?? current
+    }
+
+    private func forgetJoin() {
+        settings.hotspotJoinedAt = nil
+        joinedLink = nil
+        joinedWatch?.invalidate()
+        joinedWatch = nil
+    }
+
     // MARK: System readings
 
-    nonisolated static func readInputs() -> HotspotRescuePolicy.Inputs {
+    /// `minimumSecondsLeft` is how much of the lid helper's countdown must be left. At zero the
+    /// helper has let go of the Mac, even if its sleep request failed and it still says it is
+    /// counting.
+    nonisolated static func readInputs(minimumSecondsLeft: Int) -> HotspotRescuePolicy.Inputs {
         let wifi = CWWiFiClient.shared().interface()
         let now = Date()
-        // Time must be left on the countdown: at zero the helper has let go of the Mac, even if
-        // its sleep request failed and it still says it is counting.
         let left = LidSleep.readStatus()?.remaining(at: Int64(now.timeIntervalSince1970)) ?? 0
         return HotspotRescuePolicy.Inputs(
-            lidClosedAndAwake: lidClosed() && left > 0,
+            lidClosedAndAwake: lidClosed() && left >= minimumSecondsLeft,
             wifiOn: wifi?.powerOn() ?? false,
-            wifiAssociated: (wifi?.rssiValue() ?? 0) != 0,
-            wiredPrimary: wiredPrimary(wifiName: wifi?.interfaceName),
+            wifiAssociated: wifiAssociated(wifi),
+            wiredPrimary: wiredOnline(wifiName: wifi?.interfaceName),
             now: now)
+    }
+
+    /// Signal strength reads 0 both when not joined and when the read fails, so a channel also
+    /// has to be missing before Wi-Fi counts as down.
+    nonisolated static func wifiAssociated(_ wifi: CWInterface?) -> Bool {
+        guard let wifi else { return false }
+        return wifi.rssiValue() != 0 || wifi.wlanChannel() != nil
+    }
+
+    nonisolated static func readLink(_ wifi: CWInterface?) -> WiFiLink {
+        let name = wifi?.interfaceName
+        let keys = (SCDynamicStoreCopyKeyList(nil, "State:/Network/Service/.*/IPv4" as CFString) as? [String]) ?? []
+        let service = keys.lazy
+            .compactMap { SCDynamicStoreCopyValue(nil, $0 as CFString) as? [String: Any] }
+            .first { $0["InterfaceName"] as? String == name }
+        return WiFiLink(channel: wifi?.wlanChannel()?.channelNumber,
+                        router: service?["Router"] as? String,
+                        address: (service?["Addresses"] as? [String])?.first)
     }
 
     nonisolated static func lidClosed() -> Bool {
@@ -104,13 +174,19 @@ final class HotspotRescue {
         return (value as? Bool) ?? false
     }
 
-    /// Whether a wired network other than Wi-Fi is the way out, so there is nothing to fix. An
-    /// IPv6-only network has no IPv4 primary, so both are read.
-    nonisolated static func wiredPrimary(wifiName: String?) -> Bool {
-        ["State:/Network/Global/IPv4", "State:/Network/Global/IPv6"].contains { key in
-            guard let global = SCDynamicStoreCopyValue(nil, key as CFString) as? [String: Any],
-                  let primary = global["PrimaryInterface"] as? String else { return false }
-            return isWired(primary: primary, wifiName: wifiName)
+    /// Whether a wired network other than Wi-Fi is up, so there is nothing to fix. The primary
+    /// interface is read for IPv4 and IPv6, and every network service too, since a VPN over
+    /// Ethernet makes the tunnel primary with the cable underneath.
+    nonisolated static func wiredOnline(wifiName: String?) -> Bool {
+        let primaries = ["State:/Network/Global/IPv4", "State:/Network/Global/IPv6"].compactMap { key in
+            (SCDynamicStoreCopyValue(nil, key as CFString) as? [String: Any])?["PrimaryInterface"] as? String
+        }
+        if primaries.contains(where: { isWired(primary: $0, wifiName: wifiName) }) { return true }
+        let keys = (SCDynamicStoreCopyKeyList(nil, "State:/Network/Service/.*/IPv[46]" as CFString) as? [String]) ?? []
+        return keys.contains { key in
+            guard let service = SCDynamicStoreCopyValue(nil, key as CFString) as? [String: Any],
+                  let name = service["InterfaceName"] as? String, service["Router"] != nil else { return false }
+            return isWired(primary: name, wifiName: wifiName)
         }
     }
 

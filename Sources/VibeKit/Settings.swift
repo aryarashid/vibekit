@@ -30,8 +30,11 @@ final class Settings {
     /// How long the Mac stays awake after the lid closes, when that is on. Kept while it is off.
     var lidSleepMinutes: Int { didSet { defaults.set(lidSleepMinutes, forKey: "lidSleepMinutes") } }
     /// While the Mac stays awake with the lid closed, turn on your iPhone's hotspot and join it
-    /// when Wi-Fi drops. See `HotspotRescue`.
+    /// when Wi-Fi is down. Off unless you turn it on, since it uses your cellular data. See
+    /// `HotspotRescue`.
     var hotspotRescue: Bool { didSet { defaults.set(hotspotRescue, forKey: "hotspotRescue") } }
+    /// When Vibe Kit joined your iPhone's hotspot, while the Mac is still on it. Not saved.
+    var hotspotJoinedAt: Date?
     /// Whether a lid sleep helper is running with a delay set, so the Mac really does stay
     /// awake after the lid closes. Read from the system, not saved.
     private(set) var lidStayAwake = false
@@ -58,7 +61,6 @@ final class Settings {
             "hotKeyEnabled": true,
             "promptsHotKeyEnabled": true,
             "restoreClipboardAfterPaste": true,
-            "hotspotRescue": true,
         ])
         showOtherListeners = defaults.bool(forKey: "showOtherListeners")
         showCountInMenuBar = defaults.bool(forKey: "showCountInMenuBar")

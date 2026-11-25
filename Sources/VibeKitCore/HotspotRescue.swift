@@ -51,6 +51,12 @@ public struct HotspotRescuePolicy: Sendable, Equatable {
         return true
     }
 
+    /// Call when an attempt finishes. A failed one can take a minute or more, so the wait before
+    /// the next starts from here, not from when the attempt began.
+    public mutating func attemptEnded(at date: Date) {
+        if attempts > 0 { lastAttempt = date }
+    }
+
     /// Whether the Mac is in the state the hotspot is for: lid closed and held awake, Wi-Fi on
     /// but not joined, and no wired network. An attempt in progress asks this again before it
     /// turns the hotspot on and before each join.
@@ -87,5 +93,34 @@ public struct HotspotDevice: Sendable, Equatable {
         devices.indices
             .filter { devices[$0].group == ownGroup }
             .max { (devices[$0].signal ?? 0, $1) < (devices[$1].signal ?? 0, $0) }
+    }
+}
+
+/// What can be seen of the Wi-Fi network the Mac is on without Location access, which hides
+/// the network's name: its channel, its router and the Mac's address on it. Used to notice when
+/// the Mac leaves the hotspot Vibe Kit joined. Two networks can share a channel, but joining
+/// another one also brings a new router or address.
+public struct WiFiLink: Equatable, Sendable {
+    public var channel: Int?
+    public var router: String?
+    public var address: String?
+
+    public init(channel: Int?, router: String?, address: String?) {
+        self.channel = channel
+        self.router = router
+        self.address = address
+    }
+
+    /// Whether `current` is still the same network. A part not known on either side, such as
+    /// the router while an address is being handed out, is skipped.
+    public func matches(_ current: WiFiLink) -> Bool {
+        func same<T: Equatable>(_ a: T?, _ b: T?) -> Bool { a == nil || b == nil || a == b }
+        return same(channel, current.channel) && same(router, current.router) && same(address, current.address)
+    }
+
+    /// Fills in what was not known at the join. The router and address usually arrive a few
+    /// seconds after it.
+    public func learning(from current: WiFiLink) -> WiFiLink {
+        WiFiLink(channel: channel ?? current.channel, router: router ?? current.router, address: address ?? current.address)
     }
 }

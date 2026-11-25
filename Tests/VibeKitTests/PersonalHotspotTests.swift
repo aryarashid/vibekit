@@ -21,6 +21,8 @@ final class PersonalHotspotLiveTests: XCTestCase {
     func testJoinsYourOwnPhonesHotspot() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["VIBEKIT_LIVE_HOTSPOT"] == "1", "needs a real iPhone")
         XCTAssertTrue(PersonalHotspot.isAvailable)
+        // Run with Wi-Fi dropped: a channel must be missing too before it counts as down.
+        XCTAssertFalse(HotspotRescue.wifiAssociated(CWWiFiClient.shared().interface()), "Wi-Fi reads as joined while dropped")
         XCTAssertEqual(PersonalHotspot.connect(), .joined)
     }
 }

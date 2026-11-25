@@ -236,6 +236,9 @@ struct PromptListPage: View {
                 } else {
                     summary
                     Spacer(minLength: 6)
+                    if store.settings.hotspotJoinedAt != nil {
+                        HotspotIndicator(settings: store.settings) { route = .settings }
+                    }
                     if store.settings.lidStayAwake || store.settings.lidHelperPaused {
                         LidSleepIndicator(settings: store.settings) { route = .settings }
                     }

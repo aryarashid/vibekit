@@ -426,6 +426,9 @@ struct ServerListPage: View {
                     summary(dev)
                 }
                 Spacer(minLength: 6)
+                if store.toast == nil && store.settings.hotspotJoinedAt != nil {
+                    HotspotIndicator(settings: store.settings) { route = .settings }
+                }
                 if store.toast == nil && (store.settings.lidStayAwake || store.settings.lidHelperPaused) {
                     LidSleepIndicator(settings: store.settings) { route = .settings }
                 }

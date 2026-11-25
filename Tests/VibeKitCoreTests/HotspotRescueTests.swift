@@ -31,6 +31,14 @@ final class HotspotRescueTests: XCTestCase {
         XCTAssertEqual(HotspotRescuePolicy.retryDelay(afterAttempts: 9), 300)
     }
 
+    func testTheWaitStartsWhenASlowAttemptEnds() {
+        XCTAssertFalse(ask(at: 0))
+        XCTAssertTrue(ask(at: 20))
+        policy.attemptEnded(at: start.addingTimeInterval(80))
+        XCTAssertFalse(ask(at: 130), "a full minute after the attempt ended, not after it began")
+        XCTAssertTrue(ask(at: 140))
+    }
+
     func testNeverAsksWithTheLidOpenOrWiFiSwitchedOffOrAWiredNetwork() {
         for (lid, wifiOn, associated, wired) in [(false, true, false, false), (true, false, false, false),
                                                  (true, true, true, false), (true, true, false, true)] {
@@ -57,5 +65,24 @@ final class HotspotRescueTests: XCTestCase {
         XCTAssertEqual(HotspotDevice.pick([.init(group: 2, signal: 4), .init(group: 1, signal: 1)]), 1)
         XCTAssertEqual(HotspotDevice.pick([.init(group: 1, signal: 2), .init(group: 2, signal: 4), .init(group: 1, signal: 3)]), 2)
         XCTAssertEqual(HotspotDevice.pick([.init(group: 1, signal: nil), .init(group: 1, signal: nil)]), 0, "ties keep the first")
+    }
+}
+
+final class WiFiLinkTests: XCTestCase {
+    func testSwitchingToANetworkOnTheSameChannelCountsAsLeaving() {
+        let hotspot = WiFiLink(channel: 6, router: "192.0.0.1", address: "192.0.0.2")
+        XCTAssertTrue(hotspot.matches(hotspot))
+        XCTAssertFalse(hotspot.matches(WiFiLink(channel: 6, router: "192.168.1.1", address: "192.168.1.20")))
+        XCTAssertFalse(hotspot.matches(WiFiLink(channel: 36, router: "192.0.0.1", address: "192.0.0.2")))
+    }
+
+    func testPartsNotKnownYetAreLearnedNotTreatedAsLeaving() {
+        let atJoin = WiFiLink(channel: 6, router: nil, address: nil)
+        let afterDHCP = WiFiLink(channel: 6, router: "192.0.0.1", address: "192.0.0.2")
+        XCTAssertTrue(atJoin.matches(afterDHCP))
+        let learned = atJoin.learning(from: afterDHCP)
+        XCTAssertEqual(learned, afterDHCP)
+        XCTAssertTrue(learned.matches(WiFiLink(channel: 6, router: nil, address: nil)), "mid-handover reads are skipped")
+        XCTAssertFalse(learned.matches(WiFiLink(channel: 6, router: "10.0.0.1", address: "10.0.0.5")))
     }
 }

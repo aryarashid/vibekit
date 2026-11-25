@@ -225,11 +225,12 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(reloaded.skippedHTTPChecks, ["/tmp/app\u{0}npm run dev", "worker:9000"])
     }
 
-    @MainActor func testHotspotReconnectIsOnByDefault() {
+    /// It uses cellular data, so it is off until you turn it on.
+    @MainActor func testHotspotReconnectIsOffByDefault() {
         let defaults = UserDefaults(suiteName: "vibekit.tests.hotspot.\(UUID().uuidString)")!
-        XCTAssertTrue(Settings(defaults: defaults).hotspotRescue)
-        defaults.set(false, forKey: "hotspotRescue")
         XCTAssertFalse(Settings(defaults: defaults).hotspotRescue)
+        defaults.set(true, forKey: "hotspotRescue")
+        XCTAssertTrue(Settings(defaults: defaults).hotspotRescue)
     }
 
     func testOnlyAWiredInterfaceOtherThanWiFiCountsAsOnline() {
