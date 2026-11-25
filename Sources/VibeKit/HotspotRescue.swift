@@ -18,7 +18,9 @@ final class HotspotRescue {
     private var policy = HotspotRescuePolicy()
     private var timer: Timer?
     private var activity: NSObjectProtocol?
-    private var connecting = false
+    /// Set while an attempt runs. Raising it tells the attempt to stop before it turns the
+    /// hotspot on or joins it.
+    private var inFlight: StopFlag?
     private var notifyPort: IONotificationPortRef?
     private var notification: io_object_t = 0
 
@@ -51,34 +53,43 @@ final class HotspotRescue {
             if let activity { ProcessInfo.processInfo.endActivity(activity) }
             activity = nil
             policy = HotspotRescuePolicy()
+            inFlight?.set()
         }
     }
 
     private func check() {
-        guard !connecting else { return }
+        guard inFlight == nil else { return }
         let wifi = CWWiFiClient.shared().interface()
         let inputs = HotspotRescuePolicy.Inputs(
             lidClosedAndAwake: Self.lidClosed() && LidSleep.readStatus()?.state == .counting,
             wifiOn: wifi?.powerOn() ?? false,
-            wifiAssociated: (wifi?.rssiValue() ?? 0) != 0,
+            wifiAssociated: Self.wifiAssociated(),
             wiredPrimary: Self.wiredPrimary(wifiName: wifi?.interfaceName),
             now: Date())
         guard policy.shouldAttempt(inputs) else { return }
-        connecting = true
+        let stop = StopFlag()
+        inFlight = stop
         let attempt = policy.attempts
         NSLog("Vibe Kit: Wi-Fi is down with the lid closed, asking your iPhone for its hotspot (try \(attempt))")
         Task.detached(priority: .utility) {
-            let outcome = PersonalHotspot.connect()
+            // The setting going off is caught by `stop`; the lid and Wi-Fi are read fresh.
+            let outcome = PersonalHotspot.connect(stillNeeded: {
+                !stop.isSet && Self.lidClosed() && !Self.wifiAssociated()
+            })
             await MainActor.run { [weak self] in
                 NSLog("Vibe Kit: hotspot try \(attempt): \(outcome)")
-                self?.connecting = false
+                if self?.inFlight === stop { self?.inFlight = nil }
             }
         }
     }
 
     // MARK: System readings
 
-    static func lidClosed() -> Bool {
+    nonisolated static func wifiAssociated() -> Bool {
+        (CWWiFiClient.shared().interface()?.rssiValue() ?? 0) != 0
+    }
+
+    nonisolated static func lidClosed() -> Bool {
         let root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
         guard root != 0 else { return false }
         defer { IOObjectRelease(root) }
@@ -86,11 +97,14 @@ final class HotspotRescue {
         return (value as? Bool) ?? false
     }
 
-    /// Whether a wired network other than Wi-Fi is the way out, so there is nothing to fix.
+    /// Whether a wired network other than Wi-Fi is the way out, so there is nothing to fix. An
+    /// IPv6-only network has no IPv4 primary, so both are read.
     static func wiredPrimary(wifiName: String?) -> Bool {
-        guard let global = SCDynamicStoreCopyValue(nil, "State:/Network/Global/IPv4" as CFString) as? [String: Any],
-              let primary = global["PrimaryInterface"] as? String else { return false }
-        return isWired(primary: primary, wifiName: wifiName)
+        ["State:/Network/Global/IPv4", "State:/Network/Global/IPv6"].contains { key in
+            guard let global = SCDynamicStoreCopyValue(nil, key as CFString) as? [String: Any],
+                  let primary = global["PrimaryInterface"] as? String else { return false }
+            return isWired(primary: primary, wifiName: wifiName)
+        }
     }
 
     /// VPN tunnels can stay primary with nothing under them, so only `en` interfaces count.
@@ -118,4 +132,11 @@ final class HotspotRescue {
             IONotificationPortDestroy(port)
         }
     }
+}
+
+private final class StopFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var raised = false
+    var isSet: Bool { lock.withLock { raised } }
+    func set() { lock.withLock { raised = true } }
 }

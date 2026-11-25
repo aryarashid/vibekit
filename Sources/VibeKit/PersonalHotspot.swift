@@ -15,18 +15,29 @@ enum PersonalHotspot {
 
     enum Outcome: Equatable {
         case unavailable, noPhone, enableFailed, notJoined, joined
+        /// `stillNeeded` said no partway through, for example because the lid opened.
+        case stopped
     }
+
+    /// The enable call's argument types (a device object and a block), as checked on a real Mac.
+    /// If a macOS update changes them, the call is skipped, since calling it would crash.
+    private static let enableTypes = "v32@0:8@16@?24"
 
     /// Whether this macOS still has the private calls this needs.
     static var isAvailable: Bool {
         guard dlopen("/System/Library/PrivateFrameworks/Sharing.framework/Sharing", RTLD_NOW) != nil,
-              let cls = NSClassFromString(sessionClass) as? NSObject.Type else { return false }
-        return ["startBrowsing", "stopBrowsing", "setDelegate:", "enableHotspotForDevice:withCompletionHandler:"]
+              let cls = NSClassFromString(sessionClass) as? NSObject.Type,
+              let method = class_getInstanceMethod(cls, enableSelector),
+              let types = method_getTypeEncoding(method), String(cString: types) == enableTypes else { return false }
+        return ["startBrowsing", "stopBrowsing", "setDelegate:"]
             .allSatisfy { cls.instancesRespond(to: NSSelectorFromString($0)) }
     }
 
-    /// Finds your own iPhone, asks it to turn on its hotspot and joins it.
-    static func connect(browseSeconds: TimeInterval = 8, enableTimeout: TimeInterval = 45) -> Outcome {
+    /// Finds your own iPhone, asks it to turn on its hotspot and joins it. `stillNeeded` is asked
+    /// again before turning the hotspot on and before each join, since this takes a while and
+    /// the lid may open or Wi-Fi come back meanwhile.
+    static func connect(browseSeconds: TimeInterval = 8, enableTimeout: TimeInterval = 45,
+                        stillNeeded: () -> Bool = { true }) -> Outcome {
         guard isAvailable, let cls = NSClassFromString(sessionClass) as? NSObject.Type else { return .unavailable }
         let session = cls.init()
         let browser = Browser()
@@ -41,9 +52,10 @@ enum PersonalHotspot {
             HotspotDevice(group: number(device, "group") ?? 0, signal: number(device, "signalStrength"))
         }
         guard let index = HotspotDevice.pick(summaries) else { return .noPhone }
+        guard stillNeeded() else { return .stopped }
 
         guard let credentials = enable(devices[index], on: session, timeout: enableTimeout) else { return .enableFailed }
-        return join(network: credentials.network, password: credentials.password) ? .joined : .notJoined
+        return join(network: credentials.network, password: credentials.password, stillNeeded: stillNeeded)
     }
 
     /// Reads a property only if the object has it, since asking for a missing key throws.
@@ -73,20 +85,21 @@ enum PersonalHotspot {
 
     /// The phone needs a few seconds to start broadcasting after it says yes. Scanning by name
     /// works without Location access; the results just hide the name.
-    private static func join(network: String, password: String?) -> Bool {
-        guard let wifi = CWWiFiClient.shared().interface() else { return false }
+    private static func join(network: String, password: String?, stillNeeded: () -> Bool) -> Outcome {
+        guard let wifi = CWWiFiClient.shared().interface() else { return .notJoined }
         for attempt in 1...6 {
             Thread.sleep(forTimeInterval: attempt == 1 ? 2 : 4)
             do {
                 guard let found = try wifi.scanForNetworks(withName: network).first,
                       let target = withName(found, network) else { continue }
+                guard stillNeeded() else { return .stopped }
                 try wifi.associate(to: target, password: password)
-                return true
+                return .joined
             } catch {
                 NSLog("Vibe Kit: joining the hotspot failed on try \(attempt): \((error as NSError).domain) \((error as NSError).code)")
             }
         }
-        return false
+        return .notJoined
     }
 
     /// Without Location access, macOS strips the network name out of scan results, and joining
