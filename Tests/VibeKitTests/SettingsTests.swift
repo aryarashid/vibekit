@@ -237,5 +237,6 @@ final class SettingsTests: XCTestCase {
         XCTAssertFalse(HotspotRescue.isWired(primary: "en0", wifiName: "en0"))
         XCTAssertFalse(HotspotRescue.isWired(primary: "utun4", wifiName: "en0"), "a VPN can stay primary with nothing under it")
         XCTAssertTrue(HotspotRescue.isWired(primary: "en0", wifiName: "en1"))
+        XCTAssertTrue(HotspotRescue.isWired(primary: "bridge0", wifiName: "en0"), "Thunderbolt Bridge")
     }
 }

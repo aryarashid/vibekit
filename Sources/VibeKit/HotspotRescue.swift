@@ -71,7 +71,11 @@ final class HotspotRescue {
             })
             await MainActor.run { [weak self] in
                 NSLog("Vibe Kit: hotspot try \(attempt): \(outcome)")
-                if self?.inFlight === stop { self?.inFlight = nil }
+                guard let self, self.inFlight === stop else { return }
+                self.inFlight = nil
+                // Wi-Fi came back or the lid opened, so a later drop is a new outage and should
+                // not wait out this one's backoff.
+                if outcome == .stopped { self.policy = HotspotRescuePolicy() }
             }
         }
     }
@@ -80,12 +84,16 @@ final class HotspotRescue {
 
     nonisolated static func readInputs() -> HotspotRescuePolicy.Inputs {
         let wifi = CWWiFiClient.shared().interface()
+        let now = Date()
+        // Time must be left on the countdown: at zero the helper has let go of the Mac, even if
+        // its sleep request failed and it still says it is counting.
+        let left = LidSleep.readStatus()?.remaining(at: Int64(now.timeIntervalSince1970)) ?? 0
         return HotspotRescuePolicy.Inputs(
-            lidClosedAndAwake: lidClosed() && LidSleep.readStatus()?.state == .counting,
+            lidClosedAndAwake: lidClosed() && left > 0,
             wifiOn: wifi?.powerOn() ?? false,
             wifiAssociated: (wifi?.rssiValue() ?? 0) != 0,
             wiredPrimary: wiredPrimary(wifiName: wifi?.interfaceName),
-            now: Date())
+            now: now)
     }
 
     nonisolated static func lidClosed() -> Bool {
@@ -106,9 +114,10 @@ final class HotspotRescue {
         }
     }
 
-    /// VPN tunnels can stay primary with nothing under them, so only `en` interfaces count.
+    /// VPN tunnels can stay primary with nothing under them, so only Ethernet-style `en`
+    /// interfaces and Thunderbolt Bridge (`bridge`) count.
     nonisolated static func isWired(primary: String, wifiName: String?) -> Bool {
-        primary.hasPrefix("en") && primary != (wifiName ?? "en0")
+        (primary.hasPrefix("en") || primary.hasPrefix("bridge")) && primary != (wifiName ?? "en0")
     }
 
     /// The power manager sends a message when the lid opens or closes, among others, and each
