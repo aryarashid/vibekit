@@ -59,22 +59,15 @@ final class HotspotRescue {
 
     private func check() {
         guard inFlight == nil else { return }
-        let wifi = CWWiFiClient.shared().interface()
-        let inputs = HotspotRescuePolicy.Inputs(
-            lidClosedAndAwake: Self.lidClosed() && LidSleep.readStatus()?.state == .counting,
-            wifiOn: wifi?.powerOn() ?? false,
-            wifiAssociated: Self.wifiAssociated(),
-            wiredPrimary: Self.wiredPrimary(wifiName: wifi?.interfaceName),
-            now: Date())
-        guard policy.shouldAttempt(inputs) else { return }
+        guard policy.shouldAttempt(Self.readInputs()) else { return }
         let stop = StopFlag()
         inFlight = stop
         let attempt = policy.attempts
         NSLog("Vibe Kit: Wi-Fi is down with the lid closed, asking your iPhone for its hotspot (try \(attempt))")
         Task.detached(priority: .utility) {
-            // The setting going off is caught by `stop`; the lid and Wi-Fi are read fresh.
+            // The setting going off is caught by `stop`; everything else is read fresh.
             let outcome = PersonalHotspot.connect(stillNeeded: {
-                !stop.isSet && Self.lidClosed() && !Self.wifiAssociated()
+                !stop.isSet && HotspotRescuePolicy.isNeeded(Self.readInputs())
             })
             await MainActor.run { [weak self] in
                 NSLog("Vibe Kit: hotspot try \(attempt): \(outcome)")
@@ -85,8 +78,14 @@ final class HotspotRescue {
 
     // MARK: System readings
 
-    nonisolated static func wifiAssociated() -> Bool {
-        (CWWiFiClient.shared().interface()?.rssiValue() ?? 0) != 0
+    nonisolated static func readInputs() -> HotspotRescuePolicy.Inputs {
+        let wifi = CWWiFiClient.shared().interface()
+        return HotspotRescuePolicy.Inputs(
+            lidClosedAndAwake: lidClosed() && LidSleep.readStatus()?.state == .counting,
+            wifiOn: wifi?.powerOn() ?? false,
+            wifiAssociated: (wifi?.rssiValue() ?? 0) != 0,
+            wiredPrimary: wiredPrimary(wifiName: wifi?.interfaceName),
+            now: Date())
     }
 
     nonisolated static func lidClosed() -> Bool {
@@ -99,7 +98,7 @@ final class HotspotRescue {
 
     /// Whether a wired network other than Wi-Fi is the way out, so there is nothing to fix. An
     /// IPv6-only network has no IPv4 primary, so both are read.
-    static func wiredPrimary(wifiName: String?) -> Bool {
+    nonisolated static func wiredPrimary(wifiName: String?) -> Bool {
         ["State:/Network/Global/IPv4", "State:/Network/Global/IPv6"].contains { key in
             guard let global = SCDynamicStoreCopyValue(nil, key as CFString) as? [String: Any],
                   let primary = global["PrimaryInterface"] as? String else { return false }

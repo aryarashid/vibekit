@@ -38,7 +38,7 @@ public struct HotspotRescuePolicy: Sendable, Equatable {
 
     /// Whether to ask the iPhone now. Counts the attempt when it says yes.
     public mutating func shouldAttempt(_ inputs: Inputs) -> Bool {
-        guard inputs.lidClosedAndAwake, inputs.wifiOn, !inputs.wifiAssociated, !inputs.wiredPrimary else {
+        guard Self.isNeeded(inputs) else {
             self = Self()
             return false
         }
@@ -49,6 +49,13 @@ public struct HotspotRescuePolicy: Sendable, Equatable {
         lastAttempt = inputs.now
         attempts += 1
         return true
+    }
+
+    /// Whether the Mac is in the state the hotspot is for: lid closed and held awake, Wi-Fi on
+    /// but not joined, and no wired network. An attempt in progress asks this again before it
+    /// turns the hotspot on and before each join.
+    public static func isNeeded(_ inputs: Inputs) -> Bool {
+        inputs.lidClosedAndAwake && inputs.wifiOn && !inputs.wifiAssociated && !inputs.wiredPrimary
     }
 
     /// One minute after the first try, then two, four, and every five after that. Each try turns

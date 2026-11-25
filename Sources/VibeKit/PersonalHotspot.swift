@@ -89,14 +89,24 @@ enum PersonalHotspot {
         guard let wifi = CWWiFiClient.shared().interface() else { return .notJoined }
         for attempt in 1...6 {
             Thread.sleep(forTimeInterval: attempt == 1 ? 2 : 4)
+            guard stillNeeded() else { return .stopped }
+            let found: Set<CWNetwork>
             do {
-                guard let found = try wifi.scanForNetworks(withName: network).first,
-                      let target = withName(found, network) else { continue }
-                guard stillNeeded() else { return .stopped }
-                try wifi.associate(to: target, password: password)
-                return .joined
+                found = try wifi.scanForNetworks(withName: network)
             } catch {
-                NSLog("Vibe Kit: joining the hotspot failed on try \(attempt): \((error as NSError).domain) \((error as NSError).code)")
+                NSLog("Vibe Kit: scanning for the hotspot failed on try \(attempt): \((error as NSError).domain) \((error as NSError).code)")
+                continue
+            }
+            // Another network could share the phone's name, so try each one, strongest first.
+            for candidate in found.sorted(by: { $0.rssiValue > $1.rssiValue }) {
+                guard let target = withName(candidate, network) else { continue }
+                guard stillNeeded() else { return .stopped }
+                do {
+                    try wifi.associate(to: target, password: password)
+                    return .joined
+                } catch {
+                    NSLog("Vibe Kit: joining the hotspot failed on try \(attempt): \((error as NSError).domain) \((error as NSError).code)")
+                }
             }
         }
         return .notJoined
